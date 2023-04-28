@@ -1,0 +1,15 @@
+data_store/
+artifacts/
+node_modules/
+logs/
+ynpm-debug.log
+npm-debug.log
+build.dev/
+build.prod/
+build.test/
+.gbstate/
+*.sublime-workspace
+Bfxr
+*.00?
+config/*.json
+.DS_Store
