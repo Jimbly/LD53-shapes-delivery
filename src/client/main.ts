@@ -6,6 +6,7 @@ local_storage.setStoragePrefix('ld53'); // Before requiring anything else that m
 import assert from 'assert';
 import * as camera2d from 'glov/client/camera2d';
 import * as engine from 'glov/client/engine';
+import { getFrameTimestamp } from 'glov/client/engine';
 import { ALIGN, Font, fontStyle } from 'glov/client/font';
 // import * as input from 'glov/client/input';
 import {
@@ -27,6 +28,7 @@ import {
   drawBox,
   drawLine,
 } from 'glov/client/ui';
+import { randCreate } from 'glov/common/rand_alea';
 import {
   lerp,
   ridx,
@@ -37,15 +39,19 @@ import {
   v2copy,
   v2dist,
   v2iNormalize,
+  v2lengthSq,
   v2linePointDist,
   v2scale,
   v2sub,
   vec2,
 } from 'glov/common/vmath';
 import * as islandjoy from './islandjoy';
+import { poissonSample } from './poisson';
+
+const { min } = Math;
 
 const COLOR_FACTORY_BG = islandjoy.colors[3];
-// const COLOR_FACTORY_BORDER_LOCKED = islandjoy.colors[3];
+const COLOR_FACTORY_BORDER_LOCKED = islandjoy.colors[3];
 const COLOR_FACTORY_BORDER_ACTIVE = islandjoy.colors[5];
 // const COLOR_FACTORY_BORDER_NOINPUT = islandjoy.colors[9];
 // const COLOR_FACTORY_BORDER_FULL = islandjoy.colors[12];
@@ -100,7 +106,9 @@ function init(): void {
 }
 type Shape = number;
 type Node = {
+  unlocked: boolean;
   index: number;
+  cost: Shape;
   pos: Vec2;
   screenpos: Vec2;
   ninput: Shape[];
@@ -126,13 +134,22 @@ type Link = {
 };
 
 function isSource(n: Node): boolean {
-  return n.ninput.length === 0;
+  return n.ninput.length === 0 && n.noutput.length === 1;
 }
 function isSink(n: Node): boolean {
   return n.noutput.length === 0;
 }
-function nodeNeeds(target: Node, shape: Shape): boolean {
-  return target.ninput.indexOf(shape) !== -1;
+const MAX_NEED = 10;
+function nodeNeeds(target: Node, shape: Shape, max_need: number): boolean {
+  if (isSink(target)) {
+    return true;
+  }
+  if (target.ninput.indexOf(shape) !== -1) {
+    if ((target.nshapes[shape] || 0) < max_need) {
+      return true;
+    }
+  }
+  return false;
 }
 
 function nodeNeeds2(target: Node, source: Node): number {
@@ -141,7 +158,11 @@ function nodeNeeds2(target: Node, source: Node): number {
     for (let key in source.nshapes) {
       let shape = Number(key);
       let count = source.nshapes[key];
-      if (count && nodeNeeds(target, shape)) {
+      if (nodeNeeds(source, shape, Infinity)) {
+        // but, we want it
+        continue;
+      }
+      if (count && nodeNeeds(target, shape, MAX_NEED)) {
         return shape;
       }
     }
@@ -164,6 +185,23 @@ function removeShape(node: Node, shape: Shape): void {
   assert(false);
 }
 
+type NodeType = ([Shape, Shape, Shape, Shape] | [Shape, Shape] | [Shape]);
+const NODE_TYPES: NodeType[] = [
+  // cost, output, input1, input2
+  [-1], // free sink
+  [-1, 0], // free 0-generator
+  [0, 1, 0, 0], // 0+0=1
+  [1, 2, 0, 1], // 0+1=2
+  [2, 3, 0, 2], // 0+2=3
+  [3, 4, 1, 2], // 1+2=4
+  [4, 5, 3, 4], // 3+4=5
+  // [5, 4, 1, 3], // alt: 1+3=4
+  [5, 6, 5, 2], // 2+5=6
+  [6, 3, 0, 4], // alt: 0+4=3
+  [6, 7, 6, 3], // 3+6=7
+  // TODO: more A+A = B kind of conversions?  analyze total cost in As of each of these steps
+];
+
 
 class GameState {
   nodes: Node[] = [];
@@ -174,30 +212,56 @@ class GameState {
   viewport = {
     x: 0, y: 0, scale: 1,
   };
+  rand = randCreate(0);
   constructor() {
-    this.wallet = {
-      1: 3,
-      0: 4,
-      2: 5,
-      3: 4,
-      4: 7,
-      5: 6,
-    };
-    this.addNode(vec2(0, 0), [], [0]);
-    this.addNode(vec2(4, 1), [1], []);
-    this.addNode(vec2(2, -3), [0, 0], [1]);
-    this.addLink(0, 2);
-    this.addLink(0, 2);
+    this.wallet = {};
+    // this.addNode(vec2(-3, 0), NODE_TYPES[1]);
+    // this.addNode(vec2(-1, -3), NODE_TYPES[2]);
+    // this.addNode(vec2(3, -1), NODE_TYPES[0]);
+    // this.addLink(0, 1);
+    // this.addLink(0, 2);
+    // this.addLink(0, 2);
     // this.addLink(2, 1);
+
+    const W = 20;
+    const H = 20;
+    let points = poissonSample(this.rand, 3, 20, W, H);
+    let v2points = points.map((idx) => {
+      let x = idx % W;
+      let y = (idx - x) / W;
+      return vec2(x - W/2, y - H/2);
+    });
+    v2points.sort((a: Vec2, b: Vec2) => {
+      let da = v2lengthSq(a);
+      let db = v2lengthSq(b);
+      return da - db;
+    });
+    for (let ii = 0; ii < v2points.length; ++ii) {
+      let type = ii % NODE_TYPES.length;
+      this.addNode(v2points[ii], NODE_TYPES[type]);
+    }
+    this.nodes[0].unlocked = true;
+    this.nodes[1].unlocked = true;
   }
-  addNode(pos: Vec2, ninput: Shape[], noutput: Shape[]): void {
+  addNode(pos: Vec2, type: NodeType): void {
+    let ninput: Shape[] = [];
+    let noutput: Shape[] = [];
+    let cost = type[0];
+    for (let ii = 1; ii < min(type.length, 2); ++ii) {
+      noutput.push(type[ii]);
+    }
+    for (let ii = 2; ii < type.length; ++ii) {
+      ninput.push(type[ii]);
+    }
     let needs: Record<Shape, number> = {};
     for (let ii = 0; ii < ninput.length; ++ii) {
       needs[ninput[ii]] = (needs[ninput[ii]] || 0) + 1;
     }
 
     this.nodes.push({
+      unlocked: false,
       index: this.nodes.length,
+      cost,
       pos,
       screenpos: v2scale(vec2(), pos, SCALE),
       ninput,
@@ -238,11 +302,11 @@ class GameState {
       width: 1,
       length: v2dist(this.nodes[start].pos, this.nodes[end].pos),
       forward: {
-        last_t: this.t,
+        last_t: 0,
         lshapes: []
       },
       reverse: {
-        last_t: this.t,
+        last_t: 0,
         lshapes: [],
       },
     });
@@ -282,11 +346,12 @@ class GameState {
     }
   }
 
-  tickLinkEmit(link: Link, nodea: Node, nodeb: Node, traffic: LinkTraffic): void {
+  tickLinkEmit(link: Link, nodea: Node, nodeb: Node, traffic: LinkTraffic): boolean {
     let { t } = this;
     let { lshapes } = traffic;
     let { length } = link;
     let traveltime = length / TRAVEL_SPEED;
+    let ret = false;
 
     let time_since_emit_allowed = (t - traffic.last_t) - traveltime/link.width;
     if (time_since_emit_allowed >= 0 && lshapes.length < link.width && !isSource(nodeb)) {
@@ -294,13 +359,14 @@ class GameState {
       let emit = -1;
       if (isSource(nodea)) {
         assert.equal(nodea.noutput.length, 1);
-        if (!isSink(nodeb) || nodeNeeds(nodeb, nodea.noutput[0])) {
+        if (nodeNeeds(nodeb, nodea.noutput[0], MAX_NEED)) {
           emit = nodea.noutput[0];
         }
       } else {
         emit = nodeNeeds2(nodeb, nodea);
         if (emit !== -1) {
           removeShape(nodea, emit);
+          ret = true;
         }
       }
       if (emit !== -1) {
@@ -314,6 +380,7 @@ class GameState {
         traffic.last_t = t;
       }
     }
+    return ret;
   }
 
   hasFreeLinks(): boolean {
@@ -328,6 +395,15 @@ class GameState {
       for (let shape in needs) {
         if (needs[shape] > (nshapes[shape] || 0)) {
           satisfied = false;
+        }
+      }
+      if (satisfied) {
+        satisfied = false;
+        // only output if some output is needed
+        for (let ii = 0; ii < noutput.length; ++ii) {
+          if ((nshapes[noutput[ii]] || 0) < MAX_NEED) {
+            satisfied = true;
+          }
         }
       }
       if (satisfied) {
@@ -361,12 +437,30 @@ class GameState {
     }
 
 
+    let any_need_swap = false;
+    let do_swap: Record<number, boolean> = {};
     for (let ii = 0; ii < links.length; ++ii) {
       let link = links[ii];
       let nodea = nodes[link.start];
       let nodeb = nodes[link.end];
-      this.tickLinkEmit(link, nodea, nodeb, link.forward);
-      this.tickLinkEmit(link, nodeb, nodea, link.reverse);
+      let swap = this.tickLinkEmit(link, nodea, nodeb, link.forward);
+      swap = this.tickLinkEmit(link, nodeb, nodea, link.reverse) || swap;
+      if (swap) {
+        do_swap[ii] = true;
+        any_need_swap = true;
+      }
+    }
+    if (any_need_swap) {
+      let new_links_first: Link[] = [];
+      let new_links_last: Link[] = [];
+      for (let ii = 0; ii < links.length; ++ii) {
+        if (do_swap[ii]) {
+          new_links_last.push(links[ii]);
+        } else {
+          new_links_first.push(links[ii]);
+        }
+      }
+      this.links = new_links_first.concat(new_links_last);
     }
   }
 
@@ -416,7 +510,9 @@ function drawLinkTraffic(link: Link, x0: number, y0: number, x1: number, y1: num
 let delta = vec2();
 let posa = vec2();
 let posb = vec2();
-function drawLinkPos(width: number, posa_in: Vec2, posb_in: Vec2, bdelta: boolean, for_delete: boolean): void {
+function drawLinkPos(
+  width: number, posa_in: Vec2, posb_in: Vec2, bdelta: boolean, for_delete: boolean, is_invalid: boolean
+): void {
   v2copy(posa, posa_in);
   v2copy(posb, posb_in);
   v2sub(delta, posa, posb);
@@ -425,7 +521,11 @@ function drawLinkPos(width: number, posa_in: Vec2, posb_in: Vec2, bdelta: boolea
   if (bdelta) {
     v2addScale(posb, posb, delta, LINE_SHIFT);
   }
-  drawLine(posa[0], posa[1], posb[0], posb[1], Z.LINKS, LINE_W, 1, islandjoy.colors[for_delete ? 12 : 1]);
+  let color = islandjoy.colors[for_delete ? 12 : 1];
+  if (is_invalid) {
+    color = islandjoy.colors[(getFrameTimestamp() % 200 > 100) ? 12 : 8];
+  }
+  drawLine(posa[0], posa[1], posb[0], posb[1], Z.LINKS, LINE_W, 1, color);
   if (width > 1) {
     let linew = LINE_W;
     let z = Z.LINKS;
@@ -444,16 +544,62 @@ function drawLink(link: Link): void {
   let pa = nodea.screenpos;
   let nodeb = game_state.nodes[link.end];
   let pb = nodeb.screenpos;
-  drawLinkPos(link.width, pa, pb, true, false);
+  drawLinkPos(link.width, pa, pb, true, false, false);
   drawLinkTraffic(link, pa[0], pa[1], pb[0], pb[1], link.forward);
   drawLinkTraffic(link, pb[0], pb[1], pa[0], pa[1], link.reverse);
+}
+
+// line segment intercept math by Paul Bourke http://paulbourke.net/geometry/pointlineplane/
+const EPSILON = 0.01;
+function lineLineIntersectIgnoreEnds(p1: Vec2, p2: Vec2, p3: Vec2, p4: Vec2): boolean {
+  let denominator = ((p4[1] - p3[1]) * (p2[0] - p1[0]) - (p4[0] - p3[0]) * (p2[1] - p1[1]));
+  let numa = ((p4[0] - p3[0]) * (p1[1] - p3[1]) - (p4[1] - p3[1]) * (p1[0] - p3[0]));
+  let numb = ((p2[0] - p1[0]) * (p1[1] - p3[1]) - (p2[1] - p1[1]) * (p1[0] - p3[0]));
+
+  if (denominator === 0) {
+    // lines are parallel, or 0-length line
+    if (!numa && !numb) {
+      // lines are coincident
+      return true;
+    }
+    return false;
+  }
+
+  let ua = numa / denominator;
+  let ub = numb / denominator;
+
+  // is the intersection along the segments
+  if (ua < EPSILON || ua > 1-EPSILON || ub < EPSILON || ub > 1-EPSILON) {
+    return false;
+  }
+
+  return true;
+  // let x = p1[0] + ua * (p2[0] - p1[0]);
+  // let y = p1[1] + ua * (p2[1] - p1[1]);
+  // return [x, y];
+}
+
+
+function isLinkValid(p1: Vec2, p2: Vec2): boolean {
+  let { links, nodes } = game_state;
+  for (let ii = 0; ii < links.length; ++ii) {
+    let link = links[ii];
+    let na = nodes[link.start];
+    let nb = nodes[link.end];
+    if (lineLineIntersectIgnoreEnds(p1, p2, na.screenpos, nb.screenpos)) {
+      return false;
+    }
+  }
+  return true;
 }
 
 let mouse_pos = vec2();
 let link_target: number;
 let link_clicked: boolean;
+let last_link: string | null = null;
 function doLinking(): void {
   let { nodes, links } = game_state;
+  let link_valid = false;
   if (game_state.selected !== -1) {
     let selnode = nodes[game_state.selected];
 
@@ -462,6 +608,9 @@ function doLinking(): void {
       v2copy(mouse_pos, tnode.screenpos);
 
       let existing_link = game_state.findLink(selnode.index, link_target);
+      if (existing_link) {
+        link_valid = true;
+      }
       font.draw({
         style: link_hover_style,
         x: (tnode.screenpos[0] + selnode.screenpos[0]) / 2,
@@ -474,12 +623,18 @@ function doLinking(): void {
       mousePos(mouse_pos);
     }
 
-    drawLinkPos(1, selnode.screenpos, mouse_pos, false, false);
+    if (!link_valid && isLinkValid(selnode.screenpos, mouse_pos)) {
+      link_valid = true;
+    }
+
+    drawLinkPos(1, selnode.screenpos, mouse_pos, false, false, !link_valid);
   }
 
   if (link_clicked) {
     if (game_state.selected === -1) {
       game_state.selected = link_target;
+    } else if (!link_valid) {
+      game_state.selected = -1;
     } else if (game_state.selected === link_target) {
       game_state.selected = -1;
     } else {
@@ -502,8 +657,9 @@ function doLinking(): void {
       let d = v2linePointDist(nodea.screenpos, nodeb.screenpos, mouse_pos);
       if (d < LINE_W * 2) {
         did_link = true;
+        let link_key = `link${ii}`;
         let spot_ret = spot({
-          key: 'link',
+          key: link_key,
           x: mouse_pos[0] - 1,
           y: mouse_pos[1] - 1,
           w: 2,
@@ -512,7 +668,8 @@ function doLinking(): void {
         });
         let { focused, ret } = spot_ret;
         if (focused) {
-          drawLinkPos(2, nodea.screenpos, nodeb.screenpos, true, true);
+          last_link = link_key;
+          drawLinkPos(2, nodea.screenpos, nodeb.screenpos, true, true, false);
           font.draw({
             style: link_hover_style,
             x: (nodea.screenpos[0] + nodeb.screenpos[0]) / 2,
@@ -529,15 +686,16 @@ function doLinking(): void {
       }
     }
   }
-  if (!did_link) {
+  if (!did_link && last_link) {
     spot({
-      key: 'link',
+      key: last_link,
       x: -9e9,
       y: -9e9,
       w: 1,
       h: 1,
       def: SPOT_DEFAULT_BUTTON,
     });
+    last_link = null;
   }
 }
 
@@ -552,30 +710,33 @@ function drawNode(node: Node): void {
   };
 
   let border_color = COLOR_FACTORY_BORDER_ACTIVE;
+  if (!node.unlocked) {
+    border_color = COLOR_FACTORY_BORDER_LOCKED;
+  } else {
 
-  if (game_state.hasFreeLinks()) {
-    if (game_state.selected === node.index) {
-      border_color = COLOR_FACTORY_BORDER_SELECTED;
-    } else {
-      let spot_ret = spot({
-        ...box,
-        def: SPOT_DEFAULT_BUTTON,
-      });
-      let { focused, ret } = spot_ret;
-      if (focused || ret) {
-        border_color = COLOR_FACTORY_BORDER_ROLLOVER;
-        link_target = node.index;
-        if (ret) {
-          link_clicked = true;
+    if (game_state.hasFreeLinks()) {
+      if (game_state.selected === node.index) {
+        border_color = COLOR_FACTORY_BORDER_SELECTED;
+      } else {
+        let spot_ret = spot({
+          ...box,
+          def: SPOT_DEFAULT_BUTTON,
+        });
+        let { focused, ret } = spot_ret;
+        if (focused || ret) {
+          border_color = COLOR_FACTORY_BORDER_ROLLOVER;
+          link_target = node.index;
+          if (ret) {
+            link_clicked = true;
+          }
         }
       }
+    } else {
+      assert(game_state.selected === -1);
     }
-  } else {
-    assert(game_state.selected === -1);
-  }
-
-  if (game_state.selected === node.index) {
-    border_color = COLOR_FACTORY_BORDER_SELECTED;
+    if (game_state.selected === node.index) {
+      border_color = COLOR_FACTORY_BORDER_SELECTED;
+    }
   }
 
   drawBox(box, sprite_bubble, 0.5, COLOR_FACTORY_BG, border_color);
@@ -584,43 +745,74 @@ function drawNode(node: Node): void {
   let { ninput, noutput, nshapes } = node;
 
   let things = ninput.length + noutput.length;
-  let xx = x + (w - (things * (ICON_W + ICON_PAD) + ARROW_W)) / 2;
+  let arrow = true;
+  if (isSink(node)) {
+    arrow = false;
+    things++;
+  }
+  if (isSource(node)) {
+    arrow = false;
+  }
+  let scale = 1;
+  if (!node.unlocked) {
+    scale = 0.5;
+  }
+  let xx = x + (w - scale * (things * (ICON_W + ICON_PAD) + (arrow ? ARROW_W : -ICON_PAD))) / 2;
   let is_converter = ninput.length && noutput.length;
-  if (is_converter) {
+  if (!node.unlocked) {
+    y += NODE_PAD;
+    h -= NODE_PAD * 2;
+    h /= 2;
+    // TODO: draw cost, handle clicking to buy
+    y += h * 1.4;
+  } else if (is_converter) {
     y += NODE_PAD;
     h -= NODE_PAD * 2;
     h /= 2;
   }
+
   for (let ii = 0; ii < ninput.length; ++ii) {
     let shape = ninput[ii];
     font.draw({
-      x: xx, y, z, w: ICON_W, h,
-      size: ICON_W,
+      x: xx, y, z, w: ICON_W * scale, h,
+      size: ICON_W * scale,
       align: ALIGN.HVCENTER,
       text: SHAPE_LABELS[shape],
       color: islandjoy.font_colors[SHAPE_COLORS[shape]],
     });
-    xx += ICON_W + ICON_PAD;
+    xx += (ICON_W + ICON_PAD) * scale;
   }
-  font.draw({
-    x: xx, y, z, w: ARROW_W, h,
-    size: ICON_W,
-    align: ALIGN.HVCENTER,
-    text: '→',
-  });
-  xx += ARROW_W + ICON_PAD;
+  if (arrow) {
+    font.draw({
+      x: xx, y, z, w: ARROW_W * scale, h,
+      size: ICON_W * scale,
+      align: ALIGN.HVCENTER,
+      text: '→',
+    });
+    xx += (ARROW_W + ICON_PAD) * scale;
+  }
   for (let ii = 0; ii < noutput.length; ++ii) {
     let shape = noutput[ii];
     font.draw({
-      x: xx, y, z, w: ICON_W, h,
-      size: ICON_W,
+      x: xx, y, z, w: ICON_W * scale, h,
+      size: ICON_W * scale,
       align: ALIGN.HVCENTER,
       text: SHAPE_LABELS[shape],
       color: islandjoy.font_colors[SHAPE_COLORS[shape]],
     });
-    xx += ICON_W + ICON_PAD;
+    xx += (ICON_W + ICON_PAD) * scale;
   }
-  if (is_converter) {
+  if (isSink(node)) {
+    font.draw({
+      x: xx, y, z, w: ICON_W * scale, h,
+      size: ICON_W * scale,
+      align: ALIGN.HVCENTER,
+      text: '$',
+      color: islandjoy.font_colors[8],
+    });
+    xx += (ICON_W + ICON_PAD) * scale;
+  }
+  if (is_converter && node.unlocked) {
     y += h;
     drawLine(x + NODE_PAD, y, x + w - NODE_PAD, y, z, 1, 1, islandjoy.colors[0]);
 
@@ -644,6 +836,7 @@ function drawWallet(): void {
   const y0 = camera2d.y0();
   let z = Z.WALLET;
   let y = y0 + WALLET_PAD;
+  let any = false;
 
   // TODO: links
 
@@ -658,15 +851,18 @@ function drawWallet(): void {
       row = 0;
     }
     drawShapeCount(x + ICON_W/2, y + ICON_W/2, z+1, shape, count);
+    any = true;
     x += ICON_W + WALLET_PAD;
     row++;
   }
   y += ICON_W + WALLET_PAD/2;
 
-  drawBox({
-    x: x0 - WALLET_BORDER, y: y0 - 500, z,
-    w: WALLET_W + WALLET_BORDER + 500, h: y - y0 + WALLET_BORDER + 500,
-  }, sprite_bubble, 0.5, islandjoy.colors[11], islandjoy.colors[0]);
+  if (any) {
+    drawBox({
+      x: x0 - WALLET_BORDER, y: y0 - 500, z,
+      w: WALLET_W + WALLET_BORDER + 500, h: y - y0 + WALLET_BORDER + 500,
+    }, sprite_bubble, 0.5, islandjoy.colors[11], islandjoy.colors[0]);
+  }
 }
 
 function statePlay(dt: number): void {
@@ -706,9 +902,9 @@ function statePlay(dt: number): void {
   let zoom = mouseWheel();
   if (zoom) {
     if (zoom < 0) {
-      viewport.scale *= 2;
+      viewport.scale *= 1.25;
     } else {
-      viewport.scale /= 2;
+      viewport.scale /= 1.25;
     }
     if (viewport.scale < 1) {
       viewport.scale = 1;
@@ -753,6 +949,7 @@ export function main(): void {
     ui_sprites,
     do_borders: false,
     line_mode: LINE_ALIGN,
+    show_fps: false,
   })) {
     return;
   }
