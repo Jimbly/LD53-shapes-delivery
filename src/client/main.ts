@@ -10,8 +10,11 @@ import { getFrameTimestamp } from 'glov/client/engine';
 import { ALIGN, Font, fontStyle } from 'glov/client/font';
 // import * as input from 'glov/client/input';
 import {
+  KEYS,
   click,
   drag,
+  keyDown,
+  mouseOver,
   mousePos,
   mouseWheel,
 } from 'glov/client/input';
@@ -27,6 +30,7 @@ import {
   LINE_ALIGN,
   drawBox,
   drawLine,
+  modalDialog,
 } from 'glov/client/ui';
 import { randCreate } from 'glov/common/rand_alea';
 import {
@@ -47,16 +51,18 @@ import {
 } from 'glov/common/vmath';
 import * as islandjoy from './islandjoy';
 import { poissonSample } from './poisson';
+import { statusPush, statusTick } from './status';
 
 const { min } = Math;
 
 const COLOR_FACTORY_BG = islandjoy.colors[3];
 const COLOR_FACTORY_BORDER_LOCKED = islandjoy.colors[3];
-const COLOR_FACTORY_BORDER_ACTIVE = islandjoy.colors[5];
+const COLOR_FACTORY_BORDER_ACTIVE = islandjoy.colors[7];
 // const COLOR_FACTORY_BORDER_NOINPUT = islandjoy.colors[9];
 // const COLOR_FACTORY_BORDER_FULL = islandjoy.colors[12];
 const COLOR_FACTORY_BORDER_SELECTED = islandjoy.colors[1];
 const COLOR_FACTORY_BORDER_ROLLOVER = islandjoy.colors[0];
+const COLOR_FACTORY_BORDER_TARGETABLE = islandjoy.colors[8];
 
 const link_hover_style = fontStyle(null, {
   outline_width: 4,
@@ -71,6 +77,7 @@ Z.LINKS = 10;
 Z.TRAFFIC = 20;
 Z.NODES = 30;
 Z.WALLET = 40;
+Z.STATUS = 60;
 
 // Virtual viewport for our game logic
 const game_width = 1000;
@@ -109,6 +116,7 @@ type Node = {
   unlocked: boolean;
   index: number;
   cost: Shape;
+  cost_paid: 0;
   pos: Vec2;
   screenpos: Vec2;
   ninput: Shape[];
@@ -134,18 +142,24 @@ type Link = {
 };
 
 function isSource(n: Node): boolean {
-  return n.ninput.length === 0 && n.noutput.length === 1;
+  return n.ninput.length === 0 && n.noutput.length === 1 && n.unlocked;
 }
 function isSink(n: Node): boolean {
   return n.noutput.length === 0;
 }
-const MAX_NEED = 10;
+const MAX_NEED = 9;
 function nodeNeeds(target: Node, shape: Shape, max_need: number): boolean {
   if (isSink(target)) {
     return true;
   }
-  if (target.ninput.indexOf(shape) !== -1) {
-    if ((target.nshapes[shape] || 0) < max_need) {
+  if (target.unlocked) {
+    if (target.ninput.indexOf(shape) !== -1) {
+      if ((target.nshapes[shape] || 0) < max_need) {
+        return true;
+      }
+    }
+  } else {
+    if (target.cost === shape) {
       return true;
     }
   }
@@ -170,6 +184,24 @@ function nodeNeeds2(target: Node, source: Node): number {
   return -1;
 }
 
+function nodePotentiallyNeeds(target: Node, source: Node): boolean {
+  for (let ii = 0; ii < source.noutput.length; ++ii) {
+    let output = source.noutput[ii];
+    if (target.unlocked) {
+      for (let jj = 0; jj < target.ninput.length; ++jj) {
+        if (target.ninput[jj] === output) {
+          return true;
+        }
+      }
+    } else {
+      if (target.cost === output) {
+        return true;
+      }
+    }
+  }
+  return false;
+}
+
 function removeShape(node: Node, shape: Shape): void {
   assert(node.nshapes);
   for (let key in node.nshapes) {
@@ -188,8 +220,8 @@ function removeShape(node: Node, shape: Shape): void {
 type NodeType = ([Shape, Shape, Shape, Shape] | [Shape, Shape] | [Shape]);
 const NODE_TYPES: NodeType[] = [
   // cost, output, input1, input2
-  [-1], // free sink
-  [-1, 0], // free 0-generator
+  // [-1], // free sink
+  [2, 0], // fist 0-generator free, later costs 2
   [0, 1, 0, 0], // 0+0=1
   [1, 2, 0, 1], // 0+1=2
   [2, 3, 0, 2], // 0+2=3
@@ -202,17 +234,26 @@ const NODE_TYPES: NodeType[] = [
   // TODO: more A+A = B kind of conversions?  analyze total cost in As of each of these steps
 ];
 
+const UNLOCK_COST = [
+  3, 5, 10, 20, 30, 40, 50, 60, 70, 80, 90
+];
+const UNLOCK_COST_DEFAULT = 100;
+
 
 class GameState {
   nodes: Node[] = [];
   links: Link[] = [];
+  max_links = 1;
+  did_victory = false;
   wallet: Partial<Record<Shape, number>>;
   t: number = 0;
   dt: number = 0;
   viewport = {
     x: 0, y: 0, scale: 1,
   };
-  rand = randCreate(0);
+  rand = randCreate(1);
+  unlocks_by_cost: Partial<Record<Shape, number>> = {};
+  unlocks_total = 0;
   constructor() {
     this.wallet = {};
     // this.addNode(vec2(-3, 0), NODE_TYPES[1]);
@@ -223,9 +264,9 @@ class GameState {
     // this.addLink(0, 2);
     // this.addLink(2, 1);
 
-    const W = 20;
-    const H = 20;
-    let points = poissonSample(this.rand, 3, 20, W, H);
+    const W = 30;
+    const H = 30;
+    let points = poissonSample(this.rand, 3, 40, W, H);
     let v2points = points.map((idx) => {
       let x = idx % W;
       let y = (idx - x) / W;
@@ -241,7 +282,7 @@ class GameState {
       this.addNode(v2points[ii], NODE_TYPES[type]);
     }
     this.nodes[0].unlocked = true;
-    this.nodes[1].unlocked = true;
+    // this.nodes[1].unlocked = true;
   }
   addNode(pos: Vec2, type: NodeType): void {
     let ninput: Shape[] = [];
@@ -262,6 +303,7 @@ class GameState {
       unlocked: false,
       index: this.nodes.length,
       cost,
+      cost_paid: 0,
       pos,
       screenpos: v2scale(vec2(), pos, SCALE),
       ninput,
@@ -327,7 +369,21 @@ class GameState {
       this.wallet[shape] = (this.wallet[shape] || 0) + 1;
       return;
     }
-    node.nshapes[shape] = (node.nshapes[shape] || 0) + 1;
+    if (node.unlocked) {
+      if (nodeNeeds(node, shape, Infinity)) {
+        node.nshapes[shape] = (node.nshapes[shape] || 0) + 1;
+      } // else, was probably on the way to unlock a locked node
+    } else {
+      assert(node.cost === shape);
+      node.cost_paid++;
+      if (node.cost_paid >= this.unlockCost(node)) {
+        node.unlocked = true;
+        this.unlocks_total++;
+        this.unlocks_by_cost[node.cost] = (this.unlocks_by_cost[node.cost] || 0) + 1;
+        // TODO: floater?
+        this.max_links++;
+      }
+    }
   }
 
   tickLinkTraffic(link: Link, nodea: Node, nodeb: Node, traffic: LinkTraffic): void {
@@ -353,8 +409,12 @@ class GameState {
     let traveltime = length / TRAVEL_SPEED;
     let ret = false;
 
+    if (!nodea.unlocked) {
+      return ret;
+    }
+
     let time_since_emit_allowed = (t - traffic.last_t) - traveltime/link.width;
-    if (time_since_emit_allowed >= 0 && lshapes.length < link.width && !isSource(nodeb)) {
+    if (time_since_emit_allowed >= 0 && lshapes.length < (link.width * 2 - 1) && !isSource(nodeb)) {
       // potentially emit
       let emit = -1;
       if (isSource(nodea)) {
@@ -383,13 +443,28 @@ class GameState {
     return ret;
   }
 
+  linkCount(): number {
+    let count = 0;
+    for (let ii = 0; ii < this.links.length; ++ii) {
+      let { width } = this.links[ii];
+      count += width;
+    }
+    return count;
+  }
+
   hasFreeLinks(): boolean {
-    return true;
+    return this.linkCount() < this.max_links;
+  }
+
+  unlockCost(node: Node): number {
+    assert(!node.unlocked);
+    let count = this.unlocks_by_cost[node.cost] || 0;
+    return (UNLOCK_COST[count] || UNLOCK_COST_DEFAULT) + this.unlocks_total;
   }
 
   tickNode(node: Node): void {
-    let { ninput, noutput, needs, nshapes } = node;
-    if (ninput.length && noutput.length) {
+    let { ninput, noutput, needs, nshapes, unlocked } = node;
+    if (ninput.length && noutput.length && unlocked) {
       // factory
       let satisfied = true;
       for (let shape in needs) {
@@ -414,13 +489,25 @@ class GameState {
           // }
         }
         for (let ii = 0; ii < noutput.length; ++ii) {
-          nshapes[noutput[ii]] = (nshapes[noutput[ii]] || 0) + 1;
+          let shape = noutput[ii];
+          nshapes[shape] = (nshapes[shape] || 0) + 1;
+          if (shape === 7 && !this.did_victory) {
+            this.did_victory = true;
+            modalDialog({
+              title: 'Victory!',
+              text: 'You win!',
+              buttons: { ok: null },
+            });
+          }
         }
       }
     }
   }
 
   tick(dt: number): void {
+    if (keyDown(KEYS.SHIFT)) {
+      dt *= 10;
+    }
     this.dt = dt;
     this.t += dt;
     let { links, nodes } = this;
@@ -480,18 +567,19 @@ const NODE_PAD = 9;
 const LINE_W = 8;
 const LINE_SHIFT = NODE_H / 2 - ICON_W;
 
-function drawShapeCount(x: number, y: number, z: number, shape: Shape, count?: number): void {
+function drawShapeCount(x: number, y: number, z: number, shape: Shape, count?: number, scale?: number): void {
+  scale = scale || 1;
   font.draw({
     x, y, z,
-    size: ICON_W,
+    size: ICON_W * scale,
     align: ALIGN.HVCENTER,
     text: SHAPE_LABELS[shape],
     color: islandjoy.font_colors[SHAPE_COLORS[shape]],
   });
   if (count !== undefined) {
     font.draw({
-      x: x - ICON_W/2, y, z: z + 1, w: ICON_W,
-      size: ICON_W,
+      x: x - ICON_W/2*scale, y, z: z + 1, w: ICON_W*scale,
+      size: ICON_W*scale,
       align: ALIGN.HVCENTERFIT,
       text: String(count),
     });
@@ -637,6 +725,8 @@ function doLinking(): void {
       game_state.selected = -1;
     } else if (game_state.selected === link_target) {
       game_state.selected = -1;
+    } else if (!game_state.hasFreeLinks()) {
+      statusPush('Need more <-> !');
     } else {
       assert(link_target !== -1);
       // try to make link
@@ -699,6 +789,25 @@ function doLinking(): void {
   }
 }
 
+function selectedNodeWants(node: Node): boolean {
+  if (game_state.selected === -1) {
+    return false;
+  }
+  let selnode = game_state.nodes[game_state.selected];
+  assert(selnode !== node);
+  if (nodePotentiallyNeeds(node, selnode)) {
+    return true;
+  }
+  return false;
+}
+
+function nodeSelectable(node: Node): boolean {
+  if (node.unlocked) {
+    return true;
+  }
+  return selectedNodeWants(node);
+}
+
 function drawNode(node: Node): void {
   let x = node.screenpos[0] - NW2;
   let y = node.screenpos[1] - NH2;
@@ -710,34 +819,35 @@ function drawNode(node: Node): void {
   };
 
   let border_color = COLOR_FACTORY_BORDER_ACTIVE;
-  if (!node.unlocked) {
+  if (!nodeSelectable(node)) {
     border_color = COLOR_FACTORY_BORDER_LOCKED;
   } else {
 
-    if (game_state.hasFreeLinks()) {
-      if (game_state.selected === node.index) {
-        border_color = COLOR_FACTORY_BORDER_SELECTED;
-      } else {
-        let spot_ret = spot({
-          ...box,
-          def: SPOT_DEFAULT_BUTTON,
-        });
-        let { focused, ret } = spot_ret;
-        if (focused || ret) {
-          border_color = COLOR_FACTORY_BORDER_ROLLOVER;
-          link_target = node.index;
-          if (ret) {
-            link_clicked = true;
-          }
+    if (game_state.selected === node.index) {
+      border_color = COLOR_FACTORY_BORDER_SELECTED;
+    } else {
+      let spot_ret = spot({
+        ...box,
+        key: `node${node.index}${node.unlocked}`,
+        def: SPOT_DEFAULT_BUTTON,
+      });
+      let { focused, ret } = spot_ret;
+      if (focused || ret) {
+        border_color = COLOR_FACTORY_BORDER_ROLLOVER;
+        link_target = node.index;
+        if (ret) {
+          link_clicked = true;
         }
       }
-    } else {
-      assert(game_state.selected === -1);
     }
     if (game_state.selected === node.index) {
       border_color = COLOR_FACTORY_BORDER_SELECTED;
+    } else if (selectedNodeWants(node)) {
+      border_color = COLOR_FACTORY_BORDER_TARGETABLE;
     }
   }
+  // always eat clicks and mouseover, even if not interactable, do not allow clicking links behind
+  mouseOver(box);
 
   drawBox(box, sprite_bubble, 0.5, COLOR_FACTORY_BG, border_color);
   z++;
@@ -763,8 +873,28 @@ function drawNode(node: Node): void {
     y += NODE_PAD;
     h -= NODE_PAD * 2;
     h /= 2;
-    // TODO: draw cost, handle clicking to buy
+    // Draw cost
+    let total = game_state.unlockCost(node);
+
+    let ss = 2;
+    font.draw({
+      x: xx - (ICON_W + ICON_PAD)/2 * ss - ICON_W/2*ss, y, z, w: ICON_W * ss, h,
+      size: ICON_W * ss,
+      align: ALIGN.HVCENTER,
+      text: 'X', // Lock icon
+      color: islandjoy.font_colors[12],
+    });
+    drawShapeCount(x + w/2, y + h/2, z, node.cost, total - node.cost_paid, ss);
+
+    // draw reward
     y += h * 1.4;
+    font.draw({
+      x: x + w/2, y: y + 8, z,
+      size: ICON_W * scale,
+      align: ALIGN.HCENTER,
+      text: '+1 <->',
+      color: islandjoy.font_colors[1],
+    });
   } else if (is_converter) {
     y += NODE_PAD;
     h -= NODE_PAD * 2;
@@ -814,7 +944,7 @@ function drawNode(node: Node): void {
   }
   if (is_converter && node.unlocked) {
     y += h;
-    drawLine(x + NODE_PAD, y, x + w - NODE_PAD, y, z, 1, 1, islandjoy.colors[0]);
+    drawLine(x + NODE_PAD, y, x + w - NODE_PAD, y, z, 1, 1, islandjoy.colors[15]);
 
     things = Object.keys(nshapes).length;
     xx = x + (w - (things * (ICON_W + ICON_PAD) - ICON_PAD)) / 2;
@@ -831,7 +961,7 @@ const WALLET_W = 200;
 const WALLET_BORDER = 32;
 const WALLET_PAD = 16;
 function drawWallet(): void {
-  let { wallet } = game_state;
+  let { wallet, max_links } = game_state;
   const x0 = camera2d.x1() - WALLET_W;
   const y0 = camera2d.y0();
   let z = Z.WALLET;
@@ -839,6 +969,29 @@ function drawWallet(): void {
   let any = false;
 
   // TODO: links
+  let link_count = game_state.linkCount();
+  if (link_count) {
+    font.draw({
+      x: x0,
+      y, z,
+      w: WALLET_W/2 - WALLET_PAD/2,
+      h: ICON_W,
+      size: ICON_W,
+      align: ALIGN.HRIGHT | ALIGN.VCENTER,
+      text: `${link_count} / ${max_links}`,
+      color: islandjoy.font_colors[link_count === max_links ? 12 : 0],
+    });
+    font.draw({
+      x: x0 + WALLET_W/2 + WALLET_PAD/2,
+      y, z,
+      h: ICON_W,
+      size: ICON_W,
+      align: ALIGN.VCENTER,
+      text: '<->',
+      color: islandjoy.font_colors[1],
+    });
+    any = true;
+  }
 
   let x = x0;
   let row = 0;
@@ -874,6 +1027,13 @@ function statePlay(dt: number): void {
   let { nodes, links, viewport } = game_state;
 
   drawWallet();
+
+  statusTick({
+    x: camera2d.x0(), y: 0, w: camera2d.w(), h: camera2d.y1(),
+    z: Z.STATUS,
+    pad_bottom: 10,
+    pad_top: 10,
+  });
 
   // Draw nodes
   link_clicked = false;

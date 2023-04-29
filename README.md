@@ -14,13 +14,19 @@ X scrollable play area
 X currency/inventory display in upper right
 X click node, then another node to add a delivery route
 X click button on route to upgrade or downgrade/cancel
-* limit to number of routes
-* buy things (just more routes and upgrades and victory) in panel on the right (no undo)
-* click unactivated factory to spend cost and activate it (no undo)
-NO  * this also adds additional routes and upgrades, I think
+X limit to number of routes
+NO buy things (just more routes and upgrades and victory) in panel on the right (no undo)
+X click unactivated factory to spend cost and activate it (no undo)
+  X this also adds additional routes and upgrades, I think
 NO * click button on factory to upgrade
+* change to circles; add shapes;
+* send out for playtest
 * maybe: disable any node to turn it into storage/routing instead of a factory (flip card over visually?)
 
 Polish
+* link count should be bottom center - floaters/status comes out of there too?
+* flow should be just an emission time, not a max number on the pipe - evaluate this change after adding musical notes
+* flow should count the ones in the immediately considered pipe to decide if we're going over max (and just cap it for multi-pipe situations)
 * allow dragging from nodes to create paths
 * smooth zooming
+* on AE->D, put D last
