@@ -8,12 +8,18 @@ Ludum Dare 53 Entry by Jimbly - "Unnamed"
 
 Start with: `npm start` (after running `npm i` once)
 
+Next:
+  more test nodes
+  do not allow links to cross
+  unactivated nodes with a cost to activate?
+  figure out costs
+
 Plan: Mini-metro Factories  "Mini-Factory"?
-* factories: sources, converters, sinks
-* scrollable play area
-* currency/inventory display in upper right
+X factories: sources, converters, sinks
+X scrollable play area
+X currency/inventory display in upper right
 * click node, then another node to add a delivery route (up to limit)
-* click button on route to upgrade or downgrade/cancel
+X click button on route to upgrade or downgrade/cancel
 * buy things (just more routes and upgrades and victory) in panel on the right (no undo)
 * click unactivated factory to spend cost and activate it (no undo)
 NO  * this also adds additional routes and upgrades, I think
