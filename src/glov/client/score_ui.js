@@ -1,6 +1,7 @@
 const assert = require('assert');
 const { min, round } = Math;
-const score_system = require('./score.js');
+const score_systema = require('./score.js');
+const score_systemb = require('./scoreb.js');
 const { scrollAreaCreate } = require('./scroll_area.js');
 const ui = require('./ui.js');
 
@@ -26,6 +27,7 @@ export function drawCellDefault({
   font.drawSizedAligned(use_style, x, y, z, size, align, w, h, str);
 }
 export function scoresDraw({
+  score_system,
   x, y, z,
   width, height,
   level_id,
@@ -106,7 +108,7 @@ export function scoresDraw({
   function drawScoreEntry(ii, s, use_style) {
     let row = [
       `#${ii+1}`,
-      score_system.formatName(s),
+      score_systema.formatName(s),
     ];
     scoreToRow(row, s.score);
     drawSet(row, use_style);
@@ -115,7 +117,7 @@ export function scoresDraw({
     let s = scores[ii % scores.length];
     let use_style = style_score;
     let drawme = false;
-    if (s.name === score_system.player_name && !found_me) {
+    if (s.name === score_systema.player_name && !found_me) {
       use_style = style_me;
       found_me = true;
       drawme = true;
@@ -144,28 +146,31 @@ export function scoresDraw({
   x = x_save;
   y = y_save + min(scores_scroll_h, y);
   y += set_pad/2;
-  if (found_me && score_system.player_name.indexOf('Anonymous') === 0) {
-    if (!scores_edit_box) {
-      scores_edit_box = ui.createEditBox({
-        z,
-        w: width / 2,
-      });
-      scores_edit_box.setText(score_system.player_name);
-    }
+  if (found_me && score_systema.player_name.indexOf('Anonymous') === 0) {
+    if (score_system === score_systema) {
+      if (!scores_edit_box) {
+        scores_edit_box = ui.createEditBox({
+          z,
+          w: width / 2,
+        });
+        scores_edit_box.setText(score_systema.player_name);
+      }
 
-    if (scores_edit_box.run({
-      x,
-      y,
-    }) === scores_edit_box.SUBMIT || ui.buttonText({
-      x: x + scores_edit_box.w + size,
-      y: y - size * 0.25,
-      z,
-      w: size * 13,
-      h: ui.button_height,
-      text: 'Update Player Name'
-    })) {
-      if (scores_edit_box.text) {
-        score_system.updatePlayerName(scores_edit_box.text);
+      if (scores_edit_box.run({
+        x,
+        y,
+      }) === scores_edit_box.SUBMIT || ui.buttonText({
+        x: x + scores_edit_box.w + size,
+        y: y - size * 0.25,
+        z,
+        w: size * 13,
+        h: ui.button_height,
+        text: 'Update Player Name'
+      })) {
+        if (scores_edit_box.text) {
+          score_systema.updatePlayerName(scores_edit_box.text);
+          score_systemb.updatePlayerName(scores_edit_box.text);
+        }
       }
     }
     y += size;

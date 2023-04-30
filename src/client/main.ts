@@ -7,18 +7,29 @@ import assert from 'assert';
 import * as camera2d from 'glov/client/camera2d';
 import * as engine from 'glov/client/engine';
 import { getFrameTimestamp } from 'glov/client/engine';
-import { ALIGN, Font, fontCreate, fontStyle } from 'glov/client/font';
+import {
+  ALIGN,
+  Font,
+  FontStyle,
+  fontCreate,
+  fontStyle,
+  fontStyleColored,
+} from 'glov/client/font';
 // import * as input from 'glov/client/input';
 import {
   KEYS,
   click,
   drag,
   keyDown,
+  keyDownEdge,
   mouseOver,
   mousePos,
   mouseWheel,
 } from 'glov/client/input';
 import * as net from 'glov/client/net';
+import * as score_systema from 'glov/client/score.js';
+import { scoresDraw } from 'glov/client/score_ui.js';
+import * as score_systemb from 'glov/client/scoreb.js';
 import * as settings from 'glov/client/settings';
 import { soundLoad, soundPlay } from 'glov/client/sound';
 import {
@@ -30,12 +41,14 @@ import { Sprite, spriteCreate } from 'glov/client/sprites';
 // import * as ui from 'glov/client/ui';
 import {
   LINE_ALIGN,
+  buttonText,
   drawBox,
   drawLine,
   playUISound,
 } from 'glov/client/ui';
 import { randCreate } from 'glov/common/rand_alea';
 import {
+  clone,
   lerp,
   ridx,
   sign,
@@ -60,7 +73,7 @@ import * as islandjoy from './islandjoy';
 import { poissonSample } from './poisson';
 import { statusSetFont, statusTick } from './status';
 
-const { PI, abs, min, sin } = Math;
+const { PI, abs, floor, max, min, sin } = Math;
 
 const COLOR_FACTORY_BG = islandjoy.colors[3];
 const COLOR_FACTORY_BG_LOCKED = v4lerp(vec4(), 0.5, islandjoy.colors[3], islandjoy.colors[4]);
@@ -296,7 +309,7 @@ function removeShape(node: Node, shape: Shape): void {
 }
 
 type NodeType = ([Shape, Shape, Shape, Shape] | [Shape, Shape, Shape] | [Shape, Shape] | [Shape]);
-const NODE_TYPES: NodeType[] = [
+const NODE_TYPES_DEF: NodeType[] = [
   // cost, output, input1, input2
   // [-1], // free sink
   [2, 0], // fist 0-generator free, later costs 2
@@ -311,6 +324,16 @@ const NODE_TYPES: NodeType[] = [
   [6, 8, 6, 3], // 3+6=7
   // TODO: more A+A = B kind of conversions?  analyze total cost in As of each of these steps
 ];
+const NODE_TYPES_SIMPLE: NodeType[] = [
+  // cost, output, input1, input2
+  // [-1], // free sink
+  [2, 0], // fist 0-generator free, later costs 2
+  [0, 1, 0, 0], // 0+0=1
+  [1, 2, 0, 1], // 0+1=2
+  [2, 3, 0, 2], // 0+2=3
+  [3, 4, 1, 2], // 1+2=4
+  [4, 8, 3, 4], // 3+4=8
+];
 const VICTORY_NODE_TYPE: NodeType = [-1, -1, VICTORY_SHAPE];
 
 const UNLOCK_COST = [
@@ -319,6 +342,47 @@ const UNLOCK_COST = [
 const UNLOCK_COST_DEFAULT = 100;
 
 let flash_victory_at: number = 0;
+
+type LevelDef = {
+  node_types: NodeType[];
+  w: number;
+  h: number;
+  seed: number;
+  kfactor: number;
+  num_sinks: number;
+};
+const LEVEL_DEFS: LevelDef[] = [{
+  // 30x24x1 = 11?, slightly finicky
+  // 30x24x2 = 13, slightly finicky, not as bad, but too many links
+  seed: 2,
+  node_types: NODE_TYPES_SIMPLE,
+  w: 30,
+  h: 24,
+  kfactor: 10,
+  num_sinks: 1,
+}, {
+  seed: 4, // 3 = 18
+  node_types: NODE_TYPES_DEF,
+  w: 40,
+  h: 30,
+  kfactor: 10,
+  num_sinks: 4,
+}];
+const LEVEL_DEF_UNL: LevelDef = {
+  seed: -1,
+  node_types: NODE_TYPES_DEF,
+  w: 40,
+  h: 30,
+  kfactor: 10,
+  num_sinks: 4,
+};
+
+type ScoreData = {
+  seconds: number;
+  links: number;
+  largest_shape: number; // 0...9
+  victory: number; // 0..2
+};
 
 class GameState {
   nodes: Node[] = [];
@@ -334,23 +398,19 @@ class GameState {
   viewport = {
     x: 0, y: 0, scale: 1,
   };
-  rand = randCreate(3); // 3 = 18
   unlocks_by_cost: Partial<Record<Shape, number>> = {};
   unlocks_total = 0;
   defer_updates = true;
-  constructor() {
-    this.wallet = {};
-    // this.addNode(vec2(-3, 0), NODE_TYPES[1]);
-    // this.addNode(vec2(-1, -3), NODE_TYPES[2]);
-    // this.addNode(vec2(3, -1), NODE_TYPES[0]);
-    // this.addLink(0, 1);
-    // this.addLink(0, 2);
-    // this.addLink(0, 2);
-    // this.addLink(2, 1);
+  level_idx: number;
+  level_def!: LevelDef;
+  largest_shape = 0;
 
-    const W = 40;
-    const H = 30;
-    let points = poissonSample(this.rand, 3, 50, W, H);
+  allocLevel(level_def: LevelDef): void {
+    this.level_def = level_def;
+    let rand = randCreate(level_def.seed); // 3 = 18
+    const W = level_def.w;
+    const H = level_def.h;
+    let points = poissonSample(rand, 3, level_def.kfactor, W, H);
     let v2points = points.map((idx) => {
       let x = idx % W;
       let y = (idx - x) / W;
@@ -363,6 +423,7 @@ class GameState {
       vec2(W/4, -H/4),
       vec2(-W/4, -H/4),
     ];
+    sinks = sinks.slice(0, level_def.num_sinks);
     // find points closest to those 4
     let closest = [0,0,0,0];
     for (let ii = 0; ii < v2points.length; ++ii) {
@@ -384,9 +445,10 @@ class GameState {
       let db = v2lengthSq(b);
       return da - db;
     });
+    let { node_types } = level_def;
     for (let ii = 0; ii < v2points.length; ++ii) {
-      let type = ii % NODE_TYPES.length;
-      this.addNode(v2points[ii], NODE_TYPES[type]);
+      let type = ii % node_types.length;
+      this.addNode(v2points[ii], node_types[type]);
     }
     this.nodes[sinks.length].unlocked = true;
 
@@ -396,17 +458,28 @@ class GameState {
     for (let ii = 5; ii <= VICTORY_SHAPE; ++ii) {
       this.unlocks_by_cost[ii] = 4;
     }
+  }
+  constructor(level: number) {
+    this.wallet = {};
+    this.level_idx = level;
+
+    let level_def = LEVEL_DEFS[level];
+    if (!level_def) {
+      level_def = clone(LEVEL_DEF_UNL);
+      level_def.seed = 100 + level;
+    }
+    this.allocLevel(level_def);
 
     if (engine.DEBUG) {
-      this.unlockNode(this.nodes[4]);
-      this.unlockNode(this.nodes[5]);
-      this.unlockNode(this.nodes[6]);
-      this.unlockNode(this.nodes[7]);
-      this.unlockNode(this.nodes[8]);
-      this.unlockNode(this.nodes[9]);
-      this.unlockNode(this.nodes[10]);
-      this.unlockNode(this.nodes[11]);
-      this.unlockNode(this.nodes[12]);
+      // this.unlockNode(this.nodes[4]);
+      // this.unlockNode(this.nodes[5]);
+      // this.unlockNode(this.nodes[6]);
+      // this.unlockNode(this.nodes[7]);
+      // this.unlockNode(this.nodes[8]);
+      // this.unlockNode(this.nodes[9]);
+      // this.unlockNode(this.nodes[10]);
+      // this.unlockNode(this.nodes[11]);
+      // this.unlockNode(this.nodes[12]);
       // this.addLink(0, 1);
       // this.addLink(0, 1);
       // this.selected = 1;
@@ -433,7 +506,8 @@ class GameState {
     }
 
     let index = this.nodes.length;
-    let extra_links = (index === 2 || index === 5) ? 1 : 0;
+    let { num_sinks } = this.level_def;
+    let extra_links = (index === 2+num_sinks || index === 5+num_sinks) ? 1 : 0;
 
     this.nodes.push({
       unlocked: cost === -1,
@@ -522,30 +596,47 @@ class GameState {
     this.updateNodes();
   }
 
+  submitScore(): void {
+    let score_data: ScoreData = {
+      seconds: floor(this.t / 1000),
+      links: this.links.length,
+      largest_shape: this.largest_shape,
+      victory: this.did_victory_full ? 2 : this.did_victory_partial ? 1 : 0,
+    };
+    score_systema.setScore(this.level_idx, score_data);
+    score_systemb.setScore(this.level_idx, score_data);
+  }
+
   addShape(node: Node, shape: Shape): void {
     playShapeSound(shape);
     if (isSink(node)) {
       // this.wallet[shape] = (this.wallet[shape] || 0) + 1;
       if (shape === VICTORY_SHAPE) {
-        if (node.fulfilled_complete && !this.did_victory_full) {
-          this.did_victory_partial = true;
-          this.did_victory_full = true;
-          flash_victory_at = getFrameTimestamp();
-          playUISound('victory');
-          // modalDialog({
-          //   title: 'Full Victory!',
-          //   text: 'You win!',
-          //   buttons: { ok: null },
-          // });
-        } else if (!this.did_victory_partial) {
-          this.did_victory_partial = true;
-          flash_victory_at = getFrameTimestamp();
-          playUISound('victory_light');
-          // modalDialog({
-          //   title: 'Partial Victory!',
-          //   text: 'You win!',
-          //   buttons: { ok: null },
-          // });
+        if (node.fulfilled_complete) {
+          if (!this.did_victory_full) {
+            this.did_victory_partial = true;
+            this.did_victory_full = true;
+            flash_victory_at = getFrameTimestamp();
+            playUISound('victory');
+            // modalDialog({
+            //   title: 'Full Victory!',
+            //   text: 'You win!',
+            //   buttons: { ok: null },
+            // });
+          }
+          this.submitScore();
+        } else {
+          if (!this.did_victory_partial) {
+            this.did_victory_partial = true;
+            flash_victory_at = getFrameTimestamp();
+            playUISound('victory_light');
+            // modalDialog({
+            //   title: 'Partial Victory!',
+            //   text: 'You win!',
+            //   buttons: { ok: null },
+            // });
+          }
+          this.submitScore();
         }
       }
       return;
@@ -672,6 +763,10 @@ class GameState {
             flash_victory_at = getFrameTimestamp();
             this.made_victory_shape = true;
           }
+          if (shape > this.largest_shape) {
+            this.largest_shape = max(this.largest_shape, shape);
+            this.submitScore();
+          }
           nshapes[shape] = (nshapes[shape] || 0) + 1;
         }
       }
@@ -683,8 +778,10 @@ class GameState {
       dt *= 10;
     }
     this.dt = dt;
-    this.t += dt;
     let { links, nodes } = this;
+    if (links.length) {
+      this.t += dt;
+    }
     for (let ii = 0; ii < links.length; ++ii) {
       let link = links[ii];
       let nodea = nodes[link.start];
@@ -1058,8 +1155,11 @@ function doLinking(): void {
       game_state.selected = link_target;
       playUISound('button_click');
     }
-  } else if (game_state.selected !== -1 && click()) {
-    game_state.selected = -1;
+  } else if (game_state.selected !== -1) {
+    if (click() || keyDownEdge(KEYS.ESC)) {
+      playUISound('link_deselect');
+      game_state.selected = -1;
+    }
   }
 
   let did_link = false;
@@ -1557,6 +1657,7 @@ function drawVictory(): void {
   }, sprite_bubble, 0.5, islandjoy.colors[11], color);
 }
 
+let force_show_menu = engine.DEBUG;
 function statePlay(dt: number): void {
   camera2d.setAspectFixed2(game_width, game_height);
   gl.clearColor(islandjoy.colors[4][0], islandjoy.colors[4][1], islandjoy.colors[4][2], 1);
@@ -1574,6 +1675,20 @@ function statePlay(dt: number): void {
     pad_bottom: 10,
     pad_top: 10,
   });
+
+  const button_h = 128;
+  if (game_state.level_idx !== 0 || game_state.made_victory_shape || force_show_menu) {
+    if (buttonText({
+      x: 0, y: camera2d.y1() - button_h,
+      w: button_h, h: button_h,
+      font_height: button_h * 0.5,
+      font: symbolfont,
+      text: 'V', // menu
+    })) {
+      // eslint-disable-next-line @typescript-eslint/no-use-before-define
+      stateLevelSelectInit();
+    }
+  }
 
   // Draw nodes
   link_clicked = false;
@@ -1613,11 +1728,237 @@ function statePlay(dt: number): void {
       viewport.scale = 4;
     }
   }
+
+  if (keyDownEdge(KEYS.ESC)) {
+    force_show_menu = true;
+  }
 }
 
+let cur_level_idx = 0;
 function playInit(): void {
-  game_state = new GameState();
+  game_state = new GameState(cur_level_idx);
   engine.setState(statePlay);
+}
+
+const MAX_LEVEL = 100;
+
+let style_link = fontStyleColored(null, islandjoy.font_colors[1]);
+// eslint-disable-next-line @typescript-eslint/no-explicit-any
+type ColumnDef = any;
+function drawScoreLink(obj: {
+  value: string | number;
+  x: number; y: number; z: number; w: number; h: number;
+  size: number;
+  column: ColumnDef;
+  use_style: FontStyle; header: boolean;
+}): void {
+  let { column, x, y, z, w, h, size, value, use_style, header } = obj;
+  let { align } = column;
+  if (align === undefined) {
+    align = font.ALIGN.HVCENTERFIT;
+  }
+
+  let str = String(value);
+  symbolfont.drawSizedAligned(header ? style_link : use_style, x, y, z, size, align, w, h, str);
+}
+
+let style_trophy = fontStyleColored(null, islandjoy.font_colors[8]);
+function drawScoreProgress(obj: {
+  value: number;
+  x: number; y: number; z: number; w: number; h: number;
+  size: number;
+  column: ColumnDef;
+  use_style: FontStyle; header: boolean;
+}): void {
+  let { column, x, y, z, w, h, size, value, use_style, header } = obj;
+  let { align } = column;
+  if (align === undefined) {
+    align = font.ALIGN.HVCENTERFIT;
+  }
+
+  let str = String(value);
+  if (header) {
+    symbolfont.drawSizedAligned(header ? style_trophy : use_style, x, y, z, size, align, w, h, str);
+  } else {
+    if (value < 20) {
+      symbolfont.drawSizedAligned(SHAPE_STYLE[value], x, y, z, size, align, w, h, SHAPE_LABELS[value] || String(value));
+    } else if (value === 21) {
+      let p = {
+        x: x + (w - h) / 2, y, z,
+        w: h,
+        h: h,
+        color: COLOR_FACTORY_BG,
+        color1: COLOR_FACTORY_BORDER_NOINPUT,
+        nozoom: true,
+      };
+      sprite_circle2.drawDualTint(p);
+      symbolfont.drawSizedAligned(style_silver, x, y, z+1,
+        size * 0.8, align, w, h, SHAPE_LABELS[VICTORY_SHAPE]);
+    } else {
+      let p = {
+        x: x + (w - h) / 2, y, z,
+        w: h,
+        h: h,
+        color: COLOR_FACTORY_BG,
+        color1: COLOR_FACTORY_BORDER_ACTIVE,
+        nozoom: true,
+      };
+      sprite_circle2.drawDualTint(p);
+      symbolfont.drawSizedAligned(SHAPE_STYLE[VICTORY_SHAPE], x, y, z+1,
+        size * 0.8, align, w, h, SHAPE_LABELS[VICTORY_SHAPE]);
+    }
+  }
+}
+
+const SCORE_COLUMNSA: ColumnDef[] = [
+  // widths are just proportional, scaled relative to `width` passed in
+  { name: '', width: 12, align: ALIGN.HFIT | ALIGN.HRIGHT | ALIGN.VCENTER },
+  { name: '', width: 60, align: ALIGN.HFIT | ALIGN.VCENTER }, // Name
+  { name: '', width: 12, draw: drawScoreProgress }, // Progress
+  { name: '', width: 24 }, // Time
+//  { name: 'Z', width: 12, draw: drawScoreLink }, // Link
+];
+const SCORE_COLUMNSB: ColumnDef[] = [
+  // widths are just proportional, scaled relative to `width` passed in
+  { name: '', width: 12, align: ALIGN.HFIT | ALIGN.HRIGHT | ALIGN.VCENTER },
+  { name: '', width: 60, align: ALIGN.HFIT | ALIGN.VCENTER }, // Name
+  { name: '', width: 12, draw: drawScoreProgress }, // Progress
+  // { name: '', width: 24 }, // Time
+  { name: 'Z', width: 12, draw: drawScoreLink }, // Link
+];
+const style_score = fontStyleColored(null, islandjoy.font_colors[0]);
+const style_me = fontStyleColored(null, islandjoy.font_colors[8]);
+const style_header = fontStyleColored(null, islandjoy.font_colors[1]);
+function pad2(v: number): string {
+  return `0${v}`.slice(-2);
+}
+function myScoreToRowA(row: unknown[], score: ScoreData): void {
+  let seconds = score.seconds;
+  let s = (seconds % 60);
+  seconds -= s;
+  let m = seconds / 60;
+  row.push(score.victory ? 20 + score.victory : score.largest_shape,
+    `${m}:${pad2(s)}`);
+}
+
+function myScoreToRowB(row: unknown[], score: ScoreData): void {
+  row.push(score.victory ? 20 + score.victory : score.largest_shape,
+    score.links);
+}
+
+function stateLevelSelect(): void {
+  camera2d.setAspectFixed(1000, 1000);
+  camera2d.shift(0, -camera2d.y0());
+  const TITLE_H = 64;
+  const PAD = 16;
+  let x = 0;
+  let y = 0;
+
+  const button_h = 100;
+  const font_height = button_h * 0.75;
+  const arrow_inset = 240;
+  if (buttonText({
+    x: x + arrow_inset, y,
+    w: button_h, h: button_h, font_height, font: symbolfont,
+    text: '←',
+    disabled: cur_level_idx === 0,
+  })) {
+    cur_level_idx--;
+  }
+
+  if (buttonText({
+    x: 1000 - button_h - arrow_inset, y,
+    w: button_h, h: button_h, font_height, font: symbolfont,
+    text: '→',
+    disabled: cur_level_idx === MAX_LEVEL - 1,
+  })) {
+    cur_level_idx++;
+  }
+
+  y += (button_h - TITLE_H) / 2;
+
+  symbolfont.draw({
+    x, y, w: 1000,
+    align: ALIGN.HCENTER,
+    size: TITLE_H,
+    text: cur_level_idx < 2 ? `${cur_level_idx + 1} / 2` : `${cur_level_idx + 1} / ∞`,
+  });
+  y += TITLE_H + (button_h - TITLE_H) / 2;
+
+  let has_score = score_systema.getScore(cur_level_idx);
+
+  const button_y = camera2d.y1() - button_h;
+  const W = 1000;
+  const H = button_y;
+  let pad = 24;
+  scoresDraw({
+    score_system: score_systema,
+    x: pad, width: (W-pad)/2 - pad * 2,
+    y, height: H - y,
+    z: Z.UI,
+    size: 24,
+    line_height: 24+8,
+    level_id: String(cur_level_idx),
+    columns: SCORE_COLUMNSA,
+    scoreToRow: myScoreToRowA,
+    style_score,
+    style_me,
+    style_header,
+    color_line: islandjoy.colors[2],
+    color_me_background: islandjoy.colors[11],
+  });
+
+  scoresDraw({
+    score_system: score_systemb,
+    x: W/2 + pad/2, width: (W-pad)/2 - pad * 2,
+    y, height: H - y,
+    z: Z.UI,
+    size: 24,
+    line_height: 24+8,
+    level_id: String(cur_level_idx),
+    columns: SCORE_COLUMNSB,
+    scoreToRow: myScoreToRowB,
+    style_score,
+    style_me,
+    style_header,
+    color_line: islandjoy.colors[2],
+    color_me_background: islandjoy.colors[11],
+  });
+
+
+  y = button_y;
+  if (game_state && game_state.level_idx === cur_level_idx) {
+    if (buttonText({
+      x: 500 - button_h - PAD/2,
+      y,
+      w: button_h, h: button_h, font_height, font: symbolfont,
+      text: '←',
+    })) {
+      engine.setState(statePlay);
+    }
+    if (buttonText({
+      x: 500 + PAD/2,
+      y,
+      w: button_h, h: button_h, font_height, font: symbolfont,
+      text: 'R',
+    })) {
+      playInit();
+    }
+  } else {
+    if (buttonText({
+      x: 500 - button_h/2,
+      y,
+      w: button_h, h: button_h, font_height, font: symbolfont,
+      text: has_score ? 'R' : 'P',
+    })) {
+      playInit();
+    }
+  }
+}
+
+function stateLevelSelectInit(): void {
+  force_show_menu = true;
+  engine.setState(stateLevelSelect);
 }
 
 export function main(): void {
@@ -1649,7 +1990,13 @@ export function main(): void {
     font: font_data,
     viewport_postprocess: false,
     antialias: false,
-    ui_sprites,
+    ui_sprites: {
+      ...ui_sprites,
+      button: { ws: [63, 2, 63], hs: [128] },
+      button_rollover: { ws: [63, 2, 63], hs: [128] },
+      button_down: { ws: [63, 2, 63], hs: [128] },
+      button_disabled: { ws: [63, 2, 63], hs: [128] },
+    },
     do_borders: false,
     line_mode: LINE_ALIGN,
     show_fps: false,
@@ -1666,6 +2013,8 @@ export function main(): void {
   })) {
     return;
   }
+
+  gl.clearColor(islandjoy.colors[4][0], islandjoy.colors[4][1], islandjoy.colors[4][2], 1);
 
   // eslint-disable-next-line @typescript-eslint/no-unused-vars
   font = engine.font;
@@ -1685,5 +2034,90 @@ export function main(): void {
 
   init();
 
-  playInit();
+  const ENCODE = 1000000;
+  const ENCODE_LINKS = 1000;
+  // max progress, min time, then min links
+  function encodeScoreTime(score: ScoreData): number {
+    let {
+      seconds,
+      links,
+      largest_shape, // 0...9
+      victory, // 0..2
+    } = score;
+
+    let progress = victory ? victory + 20 : largest_shape;
+    let time = ENCODE - 1 - min(seconds, ENCODE-1);
+    let linkv = ENCODE_LINKS - 1 - min(links, ENCODE_LINKS-1);
+    return progress * ENCODE * ENCODE_LINKS + time * ENCODE_LINKS + linkv;
+  }
+  // max progress, min links, min time
+  function encodeScoreLink(score: ScoreData): number {
+    let {
+      seconds,
+      links,
+      largest_shape, // 0...9
+      victory, // 0..2
+    } = score;
+
+    let progress = victory ? victory + 20 : largest_shape;
+    let time = ENCODE - 1 - min(seconds, ENCODE-1);
+    let linkv = ENCODE_LINKS - 1 - min(links, ENCODE_LINKS-1);
+    return progress * ENCODE * ENCODE_LINKS + linkv * ENCODE + time;
+  }
+
+  function parseScoreTime(value: number): ScoreData {
+    let progress = floor(value / (ENCODE * ENCODE_LINKS));
+    value -= progress * ENCODE * ENCODE_LINKS;
+    let time = floor(value / ENCODE_LINKS);
+    value -= time * ENCODE_LINKS;
+    let links = ENCODE_LINKS - 1 - value;
+    let seconds = ENCODE - 1 - time;
+    let largest_shape = progress;
+    let victory = progress === 22 ? 2 : progress === 21 ? 1 : 0;
+    return {
+      seconds,
+      links,
+      largest_shape,
+      victory,
+    };
+  }
+  function parseScoreLink(value: number): ScoreData {
+    let progress = floor(value / (ENCODE * ENCODE_LINKS));
+    value -= progress * ENCODE * ENCODE_LINKS;
+    let links = floor(value / ENCODE);
+    value -= links * ENCODE;
+    links = ENCODE_LINKS - 1 - links;
+    let time = value;
+    let seconds = ENCODE - 1 - time;
+    let largest_shape = progress;
+    let victory = progress === 22 ? 2 : progress === 21 ? 1 : 0;
+    return {
+      seconds,
+      links,
+      largest_shape,
+      victory,
+    };
+  }
+  let level_list = [];
+  for (let ii = 0; ii < MAX_LEVEL; ++ii) {
+    level_list.push({
+      name: String(ii),
+    });
+  }
+
+  score_systema.init(encodeScoreTime, parseScoreTime, clone(level_list), 'LD53a');
+  score_systema.updateHighScores();
+  score_systemb.init(encodeScoreLink, parseScoreLink, clone(level_list), 'LD53b');
+  score_systemb.updateHighScores();
+
+  let has_score = score_systema.getScore(0);
+  if (has_score) {
+    force_show_menu = true;
+  }
+
+  if (engine.DEBUG && false) {
+    stateLevelSelectInit();
+  } else {
+    playInit();
+  }
 }

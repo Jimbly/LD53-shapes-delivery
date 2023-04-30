@@ -35,10 +35,10 @@ Plan: Mini-metro Factories  "Mini-Factory"?
   * add/upgrade/remove link
   * victory jingle
 * X give "partial victory" if you get 1 victory token, but do not have a stable setup
-  * Zach-like the high scores with victory (0/1/2) first and then min time, min used links
-  * 2 levels - intro (simpler tree), random full level 1 with good seed, then infinite past that?
+  * X Zach-like the high scores with victory (0/1/2) first and then min time, min used links
+  * X 2 levels - intro (simpler tree), random full level 1 with good seed, then infinite past that?
 * menu button in lower left to go to high scores / mfx toggle
-* from high scores, lower left goes back to game, lower right has Restart level, upper has previous/next level buttons
+* X from high scores, lower left goes back to game, lower right has Restart level, upper has previous/next level buttons
 * a couple more tiers, large play space?
 
 Polish
@@ -49,6 +49,7 @@ Polish
 * what would be needed for GAMESPEED_SCALE=20 or equivalent without losing the simplicity?
 * flow should be just an emission time, not a max number on the pipe - evaluate this change after adding musical notes
 * flow should count the ones in the immediately considered pipe to decide if we're going over max (and just cap it for multi-pipe situations)
+* alternate numbers that are just dots, show them under the inputs/outputs, get rid of inventory?
 * allow dragging from nodes to create paths
 * keyboard/wasd scroll - or, just auto-center the focus'd node (smooth pan?), would even work for controller
   * would need spot for canceling lines, though, just simple one in the middle
