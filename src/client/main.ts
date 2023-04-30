@@ -7,7 +7,7 @@ import assert from 'assert';
 import * as camera2d from 'glov/client/camera2d';
 import * as engine from 'glov/client/engine';
 import { getFrameTimestamp } from 'glov/client/engine';
-import { ALIGN, Font, fontStyle } from 'glov/client/font';
+import { ALIGN, Font, fontCreate, fontStyle } from 'glov/client/font';
 // import * as input from 'glov/client/input';
 import {
   KEYS,
@@ -47,15 +47,18 @@ import {
   v2linePointDist,
   v2scale,
   v2sub,
+  v4lerp,
   vec2,
+  vec4,
 } from 'glov/common/vmath';
 import * as islandjoy from './islandjoy';
 import { poissonSample } from './poisson';
-import { statusPush, statusTick } from './status';
+import { statusPush, statusSetFont, statusTick } from './status';
 
 const { min } = Math;
 
 const COLOR_FACTORY_BG = islandjoy.colors[3];
+const COLOR_FACTORY_BG_VICTORY = v4lerp(vec4(), 0.25, islandjoy.colors[3], islandjoy.colors[15]);
 const COLOR_FACTORY_BORDER_LOCKED = islandjoy.colors[3];
 const COLOR_FACTORY_BORDER_ACTIVE = islandjoy.colors[7];
 // const COLOR_FACTORY_BORDER_NOINPUT = islandjoy.colors[9];
@@ -70,6 +73,8 @@ const link_hover_style = fontStyle(null, {
   color: islandjoy.font_colors[0],
 });
 
+const VICTORY_SHAPE = 7;
+
 window.Z = window.Z || {};
 Z.BACKGROUND = 1;
 Z.SPRITES = 10;
@@ -83,6 +88,7 @@ Z.STATUS = 60;
 const game_width = 1000;
 const game_height = 1000;
 let font: Font;
+let symbolfont: Font;
 
 const SCALE = 100;
 
@@ -93,16 +99,34 @@ const SHAPE_COLORS: number[] = [
   7,
   9,
   12,
-  8,
   13,
   14,
   5,
+  8,
   10,
   6,
 ];
 const SHAPE_LABELS = SHAPE_COLORS.map((a, indx) => String.fromCharCode('A'.charCodeAt(0) + indx));
+const arrow_style = fontStyle(null, {
+  glow_inner: -2.5,
+  glow_outer: 5,
+  glow_color: 0x00000040,
+  color: islandjoy.font_colors[0],
+});
+const SHAPE_STYLE = SHAPE_COLORS.map((a) => fontStyle(arrow_style, {
+  color: islandjoy.font_colors[a],
+}));
+const number_style = fontStyle(null, {
+  glow_inner: 0,
+  glow_outer: 2,
+  glow_color: 0x00000040,
+  glow_xoffs: 1.5,
+  glow_yoffs: 1,
+  color: islandjoy.font_colors[0],
+});
 
 let sprite_bubble: Sprite;
+let sprite_circle: Sprite;
 function init(): void {
   sprite_bubble = spriteCreate({
     name: 'bubble',
@@ -110,13 +134,18 @@ function init(): void {
     ws: [96, 256-96-96, 96],
     hs: [96, 256-96-96, 96],
   });
+  sprite_circle = spriteCreate({
+    name: 'circle',
+    layers: 2,
+  });
 }
 type Shape = number;
 type Node = {
   unlocked: boolean;
   index: number;
   cost: Shape;
-  cost_paid: 0;
+  cost_paid: number;
+  extra_links: number;
   pos: Vec2;
   screenpos: Vec2;
   ninput: Shape[];
@@ -141,8 +170,11 @@ type Link = {
   reverse: LinkTraffic;
 };
 
-function isSource(n: Node): boolean {
+function isUnlockedSource(n: Node): boolean {
   return n.ninput.length === 0 && n.noutput.length === 1 && n.unlocked;
+}
+function isSource(n: Node): boolean {
+  return n.ninput.length === 0 && n.noutput.length === 1;
 }
 function isSink(n: Node): boolean {
   return n.noutput.length === 0;
@@ -167,7 +199,7 @@ function nodeNeeds(target: Node, shape: Shape, max_need: number): boolean {
 }
 
 function nodeNeeds2(target: Node, source: Node): number {
-  assert(!isSource(target));
+  assert(!isUnlockedSource(target));
   if (source.nshapes) {
     for (let key in source.nshapes) {
       let shape = Number(key);
@@ -282,7 +314,18 @@ class GameState {
       this.addNode(v2points[ii], NODE_TYPES[type]);
     }
     this.nodes[0].unlocked = true;
-    // this.nodes[1].unlocked = true;
+
+    if (engine.DEBUG) {
+      this.unlockNode(this.nodes[1]);
+      this.unlockNode(this.nodes[2]);
+      this.unlockNode(this.nodes[3]);
+      this.unlockNode(this.nodes[4]);
+      this.unlockNode(this.nodes[5]);
+      this.unlockNode(this.nodes[6]);
+      this.unlockNode(this.nodes[7]);
+      this.addLink(0, 1);
+      // this.selected = 1;
+    }
   }
   addNode(pos: Vec2, type: NodeType): void {
     let ninput: Shape[] = [];
@@ -299,11 +342,15 @@ class GameState {
       needs[ninput[ii]] = (needs[ninput[ii]] || 0) + 1;
     }
 
+    let index = this.nodes.length;
+    let extra_links = (index === 2 || index === 5) ? 1 : 0;
+
     this.nodes.push({
       unlocked: false,
-      index: this.nodes.length,
+      index,
       cost,
       cost_paid: 0,
+      extra_links,
       pos,
       screenpos: v2scale(vec2(), pos, SCALE),
       ninput,
@@ -364,6 +411,14 @@ class GameState {
     ridx(links, idx);
   }
 
+  unlockNode(node: Node): void {
+    node.unlocked = true;
+    this.unlocks_total++;
+    this.unlocks_by_cost[node.cost] = (this.unlocks_by_cost[node.cost] || 0) + 1;
+    // TODO: floater?
+    this.max_links += node.extra_links + 1;
+  }
+
   addShape(node: Node, shape: Shape): void {
     if (isSink(node)) {
       this.wallet[shape] = (this.wallet[shape] || 0) + 1;
@@ -377,11 +432,7 @@ class GameState {
       assert(node.cost === shape);
       node.cost_paid++;
       if (node.cost_paid >= this.unlockCost(node)) {
-        node.unlocked = true;
-        this.unlocks_total++;
-        this.unlocks_by_cost[node.cost] = (this.unlocks_by_cost[node.cost] || 0) + 1;
-        // TODO: floater?
-        this.max_links++;
+        this.unlockNode(node);
       }
     }
   }
@@ -413,11 +464,12 @@ class GameState {
       return ret;
     }
 
-    let time_since_emit_allowed = (t - traffic.last_t) - traveltime/link.width;
-    if (time_since_emit_allowed >= 0 && lshapes.length < (link.width * 2 - 1) && !isSource(nodeb)) {
+    let eff_width = link.width * 2 - 1;
+    let time_since_emit_allowed = (t - traffic.last_t) - traveltime/eff_width;
+    if (time_since_emit_allowed >= 0 && lshapes.length < eff_width && !isUnlockedSource(nodeb)) {
       // potentially emit
       let emit = -1;
-      if (isSource(nodea)) {
+      if (isUnlockedSource(nodea)) {
         assert.equal(nodea.noutput.length, 1);
         if (nodeNeeds(nodeb, nodea.noutput[0], MAX_NEED)) {
           emit = nodea.noutput[0];
@@ -491,7 +543,7 @@ class GameState {
         for (let ii = 0; ii < noutput.length; ++ii) {
           let shape = noutput[ii];
           nshapes[shape] = (nshapes[shape] || 0) + 1;
-          if (shape === 7 && !this.did_victory) {
+          if (shape === VICTORY_SHAPE && !this.did_victory) {
             this.did_victory = true;
             modalDialog({
               title: 'Victory!',
@@ -556,32 +608,43 @@ class GameState {
 }
 let game_state: GameState;
 
-const NODE_W = 250;
-const NODE_H = 150;
+const NODE_W = 200;
+const NODE_H = NODE_W;
 const NW2 = NODE_W / 2;
 const NH2 = NODE_H / 2;
 const ICON_W = 32;
-const ARROW_W = 48;
+const ARROW_W = 38;
 const ICON_PAD = 2;
 const NODE_PAD = 9;
 const LINE_W = 8;
-const LINE_SHIFT = NODE_H / 2 - ICON_W;
+const LINE_SHIFT = NODE_H / 2 - ICON_W/2;
+
+const SHAPE_XOFFS: Partial<Record<Shape, number>> = {
+  0: -3, // tri
+  1: 0.6,
+  4: 1.5, // hex
+};
+const SHAPE_YOFFS: Partial<Record<Shape, number>> = {
+  3: -2, // pent
+  6: -1, // rounded tri
+};
 
 function drawShapeCount(x: number, y: number, z: number, shape: Shape, count?: number, scale?: number): void {
   scale = scale || 1;
-  font.draw({
-    x, y, z,
+  symbolfont.draw({
+    x: x + (1 + (SHAPE_XOFFS[shape] || 0)) * scale, y: y + (-2 + (SHAPE_YOFFS[shape] || 0)) * scale, z,
     size: ICON_W * scale,
     align: ALIGN.HVCENTER,
     text: SHAPE_LABELS[shape],
-    color: islandjoy.font_colors[SHAPE_COLORS[shape]],
+    style: SHAPE_STYLE[shape],
   });
   if (count !== undefined) {
-    font.draw({
+    symbolfont.draw({
       x: x - ICON_W/2*scale, y, z: z + 1, w: ICON_W*scale,
       size: ICON_W*scale,
       align: ALIGN.HVCENTERFIT,
       text: String(count),
+      style: number_style,
     });
   }
 }
@@ -609,14 +672,15 @@ function drawLinkPos(
   if (bdelta) {
     v2addScale(posb, posb, delta, LINE_SHIFT);
   }
+  let z = Z.LINKS;
   let color = islandjoy.colors[for_delete ? 12 : 1];
   if (is_invalid) {
+    z++;
     color = islandjoy.colors[(getFrameTimestamp() % 200 > 100) ? 12 : 8];
   }
-  drawLine(posa[0], posa[1], posb[0], posb[1], Z.LINKS, LINE_W, 1, color);
+  drawLine(posa[0], posa[1], posb[0], posb[1], z, LINE_W, 1, color);
   if (width > 1) {
     let linew = LINE_W;
-    let z = Z.LINKS;
     let bit = 0;
     while (width) {
       linew += LINE_W * 0.5;
@@ -633,8 +697,8 @@ function drawLink(link: Link): void {
   let nodeb = game_state.nodes[link.end];
   let pb = nodeb.screenpos;
   drawLinkPos(link.width, pa, pb, true, false, false);
-  drawLinkTraffic(link, pa[0], pa[1], pb[0], pb[1], link.forward);
-  drawLinkTraffic(link, pb[0], pb[1], pa[0], pa[1], link.reverse);
+  drawLinkTraffic(link, posa[0], posa[1], posb[0], posb[1], link.forward);
+  drawLinkTraffic(link, posb[0], posb[1], posa[0], posa[1], link.reverse);
 }
 
 // line segment intercept math by Paul Bourke http://paulbourke.net/geometry/pointlineplane/
@@ -699,7 +763,7 @@ function doLinking(): void {
       if (existing_link) {
         link_valid = true;
       }
-      font.draw({
+      symbolfont.draw({
         style: link_hover_style,
         x: (tnode.screenpos[0] + selnode.screenpos[0]) / 2,
         y: (tnode.screenpos[1] + selnode.screenpos[1]) / 2,
@@ -726,7 +790,7 @@ function doLinking(): void {
     } else if (game_state.selected === link_target) {
       game_state.selected = -1;
     } else if (!game_state.hasFreeLinks()) {
-      statusPush('Need more <-> !');
+      statusPush('Need more Z !');
     } else {
       assert(link_target !== -1);
       // try to make link
@@ -760,7 +824,7 @@ function doLinking(): void {
         if (focused) {
           last_link = link_key;
           drawLinkPos(2, nodea.screenpos, nodeb.screenpos, true, true, false);
-          font.draw({
+          symbolfont.draw({
             style: link_hover_style,
             x: (nodea.screenpos[0] + nodeb.screenpos[0]) / 2,
             y: (nodea.screenpos[1] + nodeb.screenpos[1]) / 2,
@@ -808,6 +872,14 @@ function nodeSelectable(node: Node): boolean {
   return selectedNodeWants(node);
 }
 
+let lock_style = fontStyle(null, {
+  glow_inner: -2.5,
+  glow_outer: 2,
+  glow_color: 0x00000080,
+  color: islandjoy.font_colors[12],
+});
+
+
 function drawNode(node: Node): void {
   let x = node.screenpos[0] - NW2;
   let y = node.screenpos[1] - NH2;
@@ -849,7 +921,12 @@ function drawNode(node: Node): void {
   // always eat clicks and mouseover, even if not interactable, do not allow clicking links behind
   mouseOver(box);
 
-  drawBox(box, sprite_bubble, 0.5, COLOR_FACTORY_BG, border_color);
+  //drawBox(box, sprite_bubble, 0.5, COLOR_FACTORY_BG, border_color);
+  sprite_circle.drawDualTint({
+    ...box,
+    color: node.noutput[0] === VICTORY_SHAPE ? COLOR_FACTORY_BG_VICTORY : COLOR_FACTORY_BG,
+    color1: border_color,
+  });
   z++;
 
   let { ninput, noutput, nshapes } = node;
@@ -869,6 +946,7 @@ function drawNode(node: Node): void {
   }
   let xx = x + (w - scale * (things * (ICON_W + ICON_PAD) + (arrow ? ARROW_W : -ICON_PAD))) / 2;
   let is_converter = ninput.length && noutput.length;
+  let yoffs = 0;
   if (!node.unlocked) {
     y += NODE_PAD;
     h -= NODE_PAD * 2;
@@ -876,64 +954,69 @@ function drawNode(node: Node): void {
     // Draw cost
     let total = game_state.unlockCost(node);
 
-    let ss = 2;
-    font.draw({
-      x: xx - (ICON_W + ICON_PAD)/2 * ss - ICON_W/2*ss, y, z, w: ICON_W * ss, h,
+    let ss = 1.75;
+    symbolfont.draw({
+      x, y: y + 8, z, w, h: h * 2,
       size: ICON_W * ss,
       align: ALIGN.HVCENTER,
-      text: 'X', // Lock icon
-      color: islandjoy.font_colors[12],
+      text: 'Y', // Lock icon
+      style: lock_style,
+      alpha: 0.75,
     });
-    drawShapeCount(x + w/2, y + h/2, z, node.cost, total - node.cost_paid, ss);
+    drawShapeCount(x + w/2, y + h*0.35, z, node.cost, total - node.cost_paid, ss);
 
     // draw reward
-    y += h * 1.4;
-    font.draw({
-      x: x + w/2, y: y + 8, z,
+    y += h * 1.29;
+    symbolfont.draw({
+      x: x + w/2, y: y + 16, z,
       size: ICON_W * scale,
       align: ALIGN.HCENTER,
-      text: '+1 <->',
+      text: `+${1 + node.extra_links} Z`,
       color: islandjoy.font_colors[1],
     });
   } else if (is_converter) {
     y += NODE_PAD;
+    yoffs = 16;
     h -= NODE_PAD * 2;
     h /= 2;
   }
 
+  y += yoffs;
+
   for (let ii = 0; ii < ninput.length; ++ii) {
     let shape = ninput[ii];
-    font.draw({
+    symbolfont.draw({
       x: xx, y, z, w: ICON_W * scale, h,
       size: ICON_W * scale,
       align: ALIGN.HVCENTER,
       text: SHAPE_LABELS[shape],
-      color: islandjoy.font_colors[SHAPE_COLORS[shape]],
+      style: SHAPE_STYLE[shape],
     });
     xx += (ICON_W + ICON_PAD) * scale;
   }
   if (arrow) {
-    font.draw({
+    symbolfont.draw({
       x: xx, y, z, w: ARROW_W * scale, h,
       size: ICON_W * scale,
       align: ALIGN.HVCENTER,
       text: '→',
+      style: arrow_style,
     });
     xx += (ARROW_W + ICON_PAD) * scale;
   }
   for (let ii = 0; ii < noutput.length; ++ii) {
     let shape = noutput[ii];
-    font.draw({
+    symbolfont.draw({
       x: xx, y, z, w: ICON_W * scale, h,
       size: ICON_W * scale,
       align: ALIGN.HVCENTER,
       text: SHAPE_LABELS[shape],
-      color: islandjoy.font_colors[SHAPE_COLORS[shape]],
+      style: SHAPE_STYLE[shape],
     });
     xx += (ICON_W + ICON_PAD) * scale;
   }
   if (isSink(node)) {
-    font.draw({
+    symbolfont.draw({
       x: xx, y, z, w: ICON_W * scale, h,
       size: ICON_W * scale,
       align: ALIGN.HVCENTER,
@@ -942,15 +1025,29 @@ function drawNode(node: Node): void {
     });
     xx += (ICON_W + ICON_PAD) * scale;
   }
+  y -= yoffs;
   if (is_converter && node.unlocked) {
     y += h;
-    drawLine(x + NODE_PAD, y, x + w - NODE_PAD, y, z, 1, 1, islandjoy.colors[15]);
+    //drawLine(x + NODE_PAD + 1.5, y, x + w - (NODE_PAD + 1.5), y, z, 1, 1, islandjoy.colors[15]);
 
-    things = Object.keys(nshapes).length;
+    let keys = [];
+    for (let ii = 0; ii < ninput.length; ++ii) {
+      let shape = ninput[ii];
+      if (nshapes[shape] !== undefined && keys.indexOf(shape) === -1) {
+        keys.push(shape);
+      }
+    }
+    for (let ii = 0; ii < noutput.length; ++ii) {
+      let shape = noutput[ii];
+      if (nshapes[shape] !== undefined && keys.indexOf(shape) === -1) {
+        keys.push(shape);
+      }
+    }
+    things = keys.length;
     xx = x + (w - (things * (ICON_W + ICON_PAD) - ICON_PAD)) / 2;
-    for (let key in nshapes) {
-      let shape = Number(key);
-      let count = nshapes[key];
+    for (let ii = 0; ii < keys.length; ++ii) {
+      let shape = keys[ii];
+      let count = nshapes[shape];
       drawShapeCount(xx + ICON_W/2, y + h/2, z, shape, count);
       xx += ICON_W + ICON_PAD;
     }
@@ -971,7 +1068,7 @@ function drawWallet(): void {
   // TODO: links
   let link_count = game_state.linkCount();
   if (link_count) {
-    font.draw({
+    symbolfont.draw({
       x: x0,
       y, z,
       w: WALLET_W/2 - WALLET_PAD/2,
@@ -981,13 +1078,13 @@ function drawWallet(): void {
       text: `${link_count} / ${max_links}`,
       color: islandjoy.font_colors[link_count === max_links ? 12 : 0],
     });
-    font.draw({
+    symbolfont.draw({
       x: x0 + WALLET_W/2 + WALLET_PAD/2,
       y, z,
       h: ICON_W,
       size: ICON_W,
       align: ALIGN.VCENTER,
-      text: '<->',
+      text: 'Z',
       color: islandjoy.font_colors[1],
     });
     any = true;
@@ -1114,7 +1211,10 @@ export function main(): void {
     return;
   }
 
+  // eslint-disable-next-line @typescript-eslint/no-unused-vars
   font = engine.font;
+  symbolfont = fontCreate(require('./img/font/ld53.json'), 'font/ld53');
+  statusSetFont(symbolfont);
 
   // ui.scaleSizes(13 / 32);
   // ui.setFontHeight(8);

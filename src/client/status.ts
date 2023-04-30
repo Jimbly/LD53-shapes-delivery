@@ -27,7 +27,10 @@ let font: Font;
 let msgs: StatusMessage[] | undefined;
 function statusReset(): void {
   msgs = [];
-  ({ font } = ui);
+}
+
+export function statusSetFont(font_in: Font): void {
+  font = font_in;
 }
 
 let style_status = fontStyleColored(null, 0x000000ff);
