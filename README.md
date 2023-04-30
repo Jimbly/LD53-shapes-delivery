@@ -26,11 +26,9 @@ Plan: Mini-metro Factories  "Mini-Factory"?
 * X add shapes, arrows, link icon, tweak layout appropriately
 * NO maybe: disable any node to turn it into storage/routing instead of a factory (flip card over visually?)
 * X color nodes that do not have a valid source
-* musical notes upon every shape consumption
-  * different note per shape - 8 shapes
-  * secondary low note for when a given shape happening too often (complete switch? once per second to high?)
-    * also switch to 50% fewer high notes when links are all used up?
-* sfx:
+* X musical notes upon every shape consumption
+  * X different note per shape - 8 shapes
+* X sfx:
   * button rollover, click
   * node unlock (unlock sound, not music?)
   * error: not enough links

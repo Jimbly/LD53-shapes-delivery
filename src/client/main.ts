@@ -19,6 +19,8 @@ import {
   mouseWheel,
 } from 'glov/client/input';
 import * as net from 'glov/client/net';
+import * as settings from 'glov/client/settings';
+import { soundLoad, soundPlay } from 'glov/client/sound';
 import {
   SPOT_DEFAULT_BUTTON,
   spot,
@@ -30,11 +32,13 @@ import {
   LINE_ALIGN,
   drawBox,
   drawLine,
+  playUISound,
 } from 'glov/client/ui';
 import { randCreate } from 'glov/common/rand_alea';
 import {
   lerp,
   ridx,
+  sign,
 } from 'glov/common/util';
 import {
   Vec2,
@@ -45,6 +49,7 @@ import {
   v2iNormalize,
   v2lengthSq,
   v2linePointDist,
+  v2same,
   v2scale,
   v2sub,
   v4lerp,
@@ -186,6 +191,28 @@ type Link = {
   fullfilled: boolean;
 };
 
+const sounds = [[
+  'bass2-1',
+  'harp2-1',
+  'bass2-2',
+  'harp2-2',
+  'bass2-3',
+  'harp2-3',
+  'bass2-4',
+  // 'bass2-5',
+  // 'bass2-6',
+  'harp2-4',
+  'harp2-5',
+  'harp2-6',
+  'bass2-7',
+], [
+]];
+
+function playShapeSound(shape: Shape): void {
+  let list = sounds[0];
+  soundPlay(list[shape % list.length], 1, true);
+}
+
 function isUnlockedSource(n: Node): boolean {
   return n.ninput.length === 0 && n.noutput.length === 1 && n.unlocked;
 }
@@ -307,7 +334,7 @@ class GameState {
   viewport = {
     x: 0, y: 0, scale: 1,
   };
-  rand = randCreate(3);
+  rand = randCreate(3); // 3 = 18
   unlocks_by_cost: Partial<Record<Shape, number>> = {};
   unlocks_total = 0;
   defer_updates = true;
@@ -489,10 +516,14 @@ class GameState {
     this.unlocks_by_cost[node.cost] = (this.unlocks_by_cost[node.cost] || 0) + 1;
     // TODO: floater?
     this.max_links += node.extra_links + 1;
+    if (!this.defer_updates) {
+      playUISound('unlock');
+    }
     this.updateNodes();
   }
 
   addShape(node: Node, shape: Shape): void {
+    playShapeSound(shape);
     if (isSink(node)) {
       // this.wallet[shape] = (this.wallet[shape] || 0) + 1;
       if (shape === VICTORY_SHAPE) {
@@ -500,6 +531,7 @@ class GameState {
           this.did_victory_partial = true;
           this.did_victory_full = true;
           flash_victory_at = getFrameTimestamp();
+          playUISound('victory');
           // modalDialog({
           //   title: 'Full Victory!',
           //   text: 'You win!',
@@ -508,6 +540,7 @@ class GameState {
         } else if (!this.did_victory_partial) {
           this.did_victory_partial = true;
           flash_victory_at = getFrameTimestamp();
+          playUISound('victory_light');
           // modalDialog({
           //   title: 'Partial Victory!',
           //   text: 'You win!',
@@ -899,6 +932,34 @@ function lineLineIntersectIgnoreEnds(p1: Vec2, p2: Vec2, p3: Vec2, p4: Vec2): bo
     // lines are parallel, or 0-length line
     if (!numa && !numb) {
       // lines are coincident
+      let same;
+      let other1: Vec2;
+      let other2: Vec2;
+      if (v2same(p1, p3)) {
+        same = p1;
+        other1 = p2;
+        other2 = p4;
+      } else if (v2same(p1, p4)) {
+        same = p1;
+        other1 = p2;
+        other2 = p3;
+      } else if (v2same(p2, p3)) {
+        same = p2;
+        other1 = p1;
+        other2 = p4;
+      } else if (v2same(p2, p4)) {
+        same = p2;
+        other1 = p1;
+        other2 = p3;
+      }
+      if (same) {
+        if (sign(same[0] - other1![0]) === sign(other2![0] - same[0]) &&
+          sign(same[1] - other1![1]) === sign(other2![1] - same[1])
+        ) {
+          // both going in opposite direcitons
+          return false;
+        }
+      }
       return true;
     }
     return false;
@@ -973,13 +1034,17 @@ function doLinking(): void {
   if (link_clicked) {
     if (game_state.selected === -1) {
       game_state.selected = link_target;
+      playUISound('button_click');
     } else if (!link_valid) {
       game_state.selected = -1;
+      playUISound('error_chord');
     } else if (game_state.selected === link_target) {
       game_state.selected = -1;
+      playUISound('link_deselect');
     } else if (!game_state.hasFreeLinks()) {
       // statusPush('Need more Z !');
       flash_status_at = getFrameTimestamp();
+      playUISound('error_chord');
     } else if (nodePotentiallyNeeds(nodes[link_target], nodes[game_state.selected]) ||
       nodes[link_target].unlocked && nodePotentiallyNeeds(nodes[game_state.selected], nodes[link_target])
     ) {
@@ -987,9 +1052,11 @@ function doLinking(): void {
       // try to make link
       game_state.addLink(game_state.selected, link_target);
       game_state.selected = -1;
+      playUISound('link_make');
     } else {
       // invalid
       game_state.selected = link_target;
+      playUISound('button_click');
     }
   } else if (game_state.selected !== -1 && click()) {
     game_state.selected = -1;
@@ -1013,6 +1080,7 @@ function doLinking(): void {
           w: 2,
           h: 2,
           def: SPOT_DEFAULT_BUTTON,
+          sound_button: 'link_break',
         });
         let { focused, ret } = spot_ret;
         if (focused) {
@@ -1112,6 +1180,7 @@ function drawNode(node: Node): void {
     if (game_state.selected === node.index) {
       border_color = COLOR_FACTORY_BORDER_SELECTED;
       if (!(node.index === 0 && game_state.links.length === 0) && click(box)) {
+        playUISound('link_deselect');
         game_state.selected = -1;
       }
     } else {
@@ -1119,6 +1188,7 @@ function drawNode(node: Node): void {
         ...box,
         key: `node${node.index}${node.unlocked}`,
         def: SPOT_DEFAULT_BUTTON,
+        sound_button: null,
       });
       let { focused, ret } = spot_ret;
       if (focused || ret) {
@@ -1390,7 +1460,7 @@ const VICTORY_H = 61;
 const VICTORY_BORDER = 16;
 const VICTORY_PAD = 4;
 function drawVictory(): void {
-  if (engine.DEBUG && !flash_victory_at) {
+  if (engine.DEBUG && !flash_victory_at && false) {
     game_state.did_victory_full = true;
     game_state.made_victory_shape = true;
     flash_victory_at = getFrameTimestamp();
@@ -1583,6 +1653,16 @@ export function main(): void {
     do_borders: false,
     line_mode: LINE_ALIGN,
     show_fps: false,
+    ui_sounds: {
+      rollover: { file: 'rollover', volume: 0.1 },
+      link_make: 'link_make',
+      link_deselect: 'button2',
+      link_break: 'button3',
+      error_chord: 'error_chord',
+      unlock: 'unlock',
+      victory: 'victory',
+      victory_light: 'victory_light',
+    },
   })) {
     return;
   }
@@ -1592,8 +1672,16 @@ export function main(): void {
   symbolfont = fontCreate(require('./img/font/ld53.json'), 'font/ld53');
   statusSetFont(symbolfont);
 
+  for (let ii = 0; ii < sounds.length; ++ii) {
+    let list = sounds[ii];
+    for (let jj = 0; jj < list.length; ++jj) {
+      soundLoad(list[jj]);
+    }
+  }
+
   // ui.scaleSizes(13 / 32);
   // ui.setFontHeight(8);
+  settings.runTimeDefault('volume_music', 0.5);
 
   init();
 
