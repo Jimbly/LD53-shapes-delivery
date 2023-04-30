@@ -53,16 +53,17 @@ import {
 } from 'glov/common/vmath';
 import * as islandjoy from './islandjoy';
 import { poissonSample } from './poisson';
-import { statusPush, statusSetFont, statusTick } from './status';
+import { statusSetFont, statusTick } from './status';
 
-const { min } = Math;
+const { PI, abs, min, sin } = Math;
 
 const COLOR_FACTORY_BG = islandjoy.colors[3];
-const COLOR_FACTORY_BG_VICTORY = v4lerp(vec4(), 0.25, islandjoy.colors[3], islandjoy.colors[15]);
-const COLOR_FACTORY_BORDER_LOCKED = islandjoy.colors[3];
+const COLOR_FACTORY_BG_LOCKED = v4lerp(vec4(), 0.5, islandjoy.colors[3], islandjoy.colors[4]);
+const COLOR_FACTORY_BG_VICTORY = v4lerp(vec4(), 0.5, COLOR_FACTORY_BG_LOCKED, islandjoy.colors[15]);
+const COLOR_FACTORY_BORDER_LOCKED = COLOR_FACTORY_BG_LOCKED;
 const COLOR_FACTORY_BORDER_ACTIVE = islandjoy.colors[7];
-// const COLOR_FACTORY_BORDER_NOINPUT = islandjoy.colors[9];
-// const COLOR_FACTORY_BORDER_FULL = islandjoy.colors[12];
+// const COLOR_FACTORY_BORDER_STARVED = islandjoy.colors[12];
+const COLOR_FACTORY_BORDER_NOINPUT = islandjoy.colors[9];
 const COLOR_FACTORY_BORDER_SELECTED = islandjoy.colors[1];
 const COLOR_FACTORY_BORDER_ROLLOVER = islandjoy.colors[0];
 const COLOR_FACTORY_BORDER_TARGETABLE = islandjoy.colors[8];
@@ -152,6 +153,7 @@ type Node = {
   noutput: Shape[];
   nshapes: Record<Shape, number>;
   needs: Record<Shape, number>;
+  unfulfilled: boolean;
 };
 type LinkShape = {
   shape: Shape;
@@ -162,6 +164,7 @@ type LinkTraffic = {
   lshapes: LinkShape[];
 };
 type Link = {
+  uid: number;
   start: number;
   end: number;
   width: number;
@@ -275,6 +278,7 @@ const UNLOCK_COST_DEFAULT = 100;
 class GameState {
   nodes: Node[] = [];
   links: Link[] = [];
+  link_last_idx = 0;
   max_links = 1;
   did_victory = false;
   wallet: Partial<Record<Shape, number>>;
@@ -286,6 +290,7 @@ class GameState {
   rand = randCreate(1);
   unlocks_by_cost: Partial<Record<Shape, number>> = {};
   unlocks_total = 0;
+  defer_updates = true;
   constructor() {
     this.wallet = {};
     // this.addNode(vec2(-3, 0), NODE_TYPES[1]);
@@ -315,17 +320,28 @@ class GameState {
     }
     this.nodes[0].unlocked = true;
 
+    this.unlocks_by_cost[2] = 1;
+    this.unlocks_by_cost[3] = 2;
+    this.unlocks_by_cost[4] = 3;
+    for (let ii = 5; ii <= VICTORY_SHAPE; ++ii) {
+      this.unlocks_by_cost[ii] = 4;
+    }
+
     if (engine.DEBUG) {
-      this.unlockNode(this.nodes[1]);
-      this.unlockNode(this.nodes[2]);
-      this.unlockNode(this.nodes[3]);
-      this.unlockNode(this.nodes[4]);
-      this.unlockNode(this.nodes[5]);
-      this.unlockNode(this.nodes[6]);
-      this.unlockNode(this.nodes[7]);
-      this.addLink(0, 1);
+      // this.unlockNode(this.nodes[1]);
+      // this.unlockNode(this.nodes[2]);
+      // this.unlockNode(this.nodes[3]);
+      // this.unlockNode(this.nodes[4]);
+      // this.unlockNode(this.nodes[5]);
+      // this.unlockNode(this.nodes[6]);
+      // this.unlockNode(this.nodes[7]);
+      // this.addLink(0, 1);
+      // this.addLink(0, 1);
       // this.selected = 1;
     }
+
+    this.defer_updates = false;
+    this.updateNodes();
   }
   addNode(pos: Vec2, type: NodeType): void {
     let ninput: Shape[] = [];
@@ -357,6 +373,7 @@ class GameState {
       noutput,
       needs,
       nshapes: {},
+      unfulfilled: true,
     });
   }
   findLink(start: number, end: number): Link | null {
@@ -378,6 +395,7 @@ class GameState {
     let link = this.findLink(start, end);
     if (link) {
       link.width++;
+      // this.updateNodes();
       return;
     }
     if (start > end) {
@@ -387,6 +405,7 @@ class GameState {
     }
     let { links } = this;
     links.push({
+      uid: ++this.link_last_idx,
       start, end,
       width: 1,
       length: v2dist(this.nodes[start].pos, this.nodes[end].pos),
@@ -399,16 +418,19 @@ class GameState {
         lshapes: [],
       },
     });
+    this.updateNodes();
   }
   removeLink(link: Link): void {
     if (link.width > 1) {
       link.width--;
+      // this.updateNodes();
       return;
     }
     let { links } = this;
     let idx = links.indexOf(link);
     assert(idx !== -1);
     ridx(links, idx);
+    this.updateNodes();
   }
 
   unlockNode(node: Node): void {
@@ -417,6 +439,7 @@ class GameState {
     this.unlocks_by_cost[node.cost] = (this.unlocks_by_cost[node.cost] || 0) + 1;
     // TODO: floater?
     this.max_links += node.extra_links + 1;
+    this.updateNodes();
   }
 
   addShape(node: Node, shape: Shape): void {
@@ -603,6 +626,47 @@ class GameState {
     }
   }
 
+  nodeUnfulfilled(node: Node): boolean {
+    let { links, nodes } = this;
+    if (isSource(node) || !node.unlocked) {
+      return false;
+    }
+    let inputs_satisfied: Record<Shape, boolean> = {};
+    for (let ii = 0; ii < links.length; ++ii) {
+      let link = links[ii];
+      if (link.start === node.index) {
+        let other = nodes[link.end];
+        for (let jj = 0; jj < other.noutput.length; ++jj) {
+          inputs_satisfied[other.noutput[jj]] = true;
+        }
+      } else if (link.end === node.index) {
+        let other = nodes[link.start];
+        for (let jj = 0; jj < other.noutput.length; ++jj) {
+          inputs_satisfied[other.noutput[jj]] = true;
+        }
+      }
+    }
+    for (let ii = 0; ii < node.ninput.length; ++ii) {
+      let shape = node.ninput[ii];
+      if (!inputs_satisfied[shape]) {
+        return true;
+      }
+    }
+    return false;
+  }
+
+  updateNodes(): void {
+    if (this.defer_updates) {
+      return;
+    }
+
+    // Update anything that only needs to change upon topography changes
+    let { nodes } = this;
+    for (let ii = 0; ii < nodes.length; ++ii) {
+      let node = nodes[ii];
+      node.unfulfilled = this.nodeUnfulfilled(node);
+    }
+  }
 
   selected = -1;
 }
@@ -745,6 +809,7 @@ function isLinkValid(p1: Vec2, p2: Vec2): boolean {
   return true;
 }
 
+let flash_status_at: number = 0;
 let mouse_pos = vec2();
 let link_target: number;
 let link_clicked: boolean;
@@ -790,7 +855,8 @@ function doLinking(): void {
     } else if (game_state.selected === link_target) {
       game_state.selected = -1;
     } else if (!game_state.hasFreeLinks()) {
-      statusPush('Need more Z !');
+      // statusPush('Need more Z !');
+      flash_status_at = getFrameTimestamp();
     } else {
       assert(link_target !== -1);
       // try to make link
@@ -811,7 +877,7 @@ function doLinking(): void {
       let d = v2linePointDist(nodea.screenpos, nodeb.screenpos, mouse_pos);
       if (d < LINE_W * 2) {
         did_link = true;
-        let link_key = `link${ii}`;
+        let link_key = `link${link.uid}`;
         let spot_ret = spot({
           key: link_key,
           x: mouse_pos[0] - 1,
@@ -879,6 +945,13 @@ let lock_style = fontStyle(null, {
   color: islandjoy.font_colors[12],
 });
 
+let lock_style_victory = fontStyle(null, {
+  glow_inner: -2.5,
+  glow_outer: 2,
+  glow_color: 0x00000080,
+  color: islandjoy.font_colors[8],
+});
+
 
 function drawNode(node: Node): void {
   let x = node.screenpos[0] - NW2;
@@ -897,6 +970,9 @@ function drawNode(node: Node): void {
 
     if (game_state.selected === node.index) {
       border_color = COLOR_FACTORY_BORDER_SELECTED;
+      if (!(node.index === 0 && game_state.links.length === 0) && click(box)) {
+        game_state.selected = -1;
+      }
     } else {
       let spot_ret = spot({
         ...box,
@@ -916,18 +992,32 @@ function drawNode(node: Node): void {
       border_color = COLOR_FACTORY_BORDER_SELECTED;
     } else if (selectedNodeWants(node)) {
       border_color = COLOR_FACTORY_BORDER_TARGETABLE;
+    } else if (node.unfulfilled) {
+      border_color = COLOR_FACTORY_BORDER_NOINPUT;
     }
   }
   // always eat clicks and mouseover, even if not interactable, do not allow clicking links behind
   mouseOver(box);
 
+  if (x > camera2d.x1Real() ||
+    y > camera2d.y1Real() ||
+    x + NODE_W < camera2d.x0Real() ||
+    y + NODE_H < camera2d.y0Real()
+  ) {
+    return;
+  }
+
+
   //drawBox(box, sprite_bubble, 0.5, COLOR_FACTORY_BG, border_color);
   sprite_circle.drawDualTint({
     ...box,
-    color: node.noutput[0] === VICTORY_SHAPE ? COLOR_FACTORY_BG_VICTORY : COLOR_FACTORY_BG,
+    color: node.noutput[0] === VICTORY_SHAPE ?
+      COLOR_FACTORY_BG_VICTORY :
+      node.unlocked ? COLOR_FACTORY_BG :
+      COLOR_FACTORY_BG_LOCKED,
     color1: border_color,
   });
-  z++;
+  z+=4;
 
   let { ninput, noutput, nshapes } = node;
 
@@ -956,14 +1046,14 @@ function drawNode(node: Node): void {
 
     let ss = 1.75;
     symbolfont.draw({
-      x, y: y + 8, z, w, h: h * 2,
+      x, y: y + 8, z: z - 3, w, h: h * 2,
       size: ICON_W * ss,
       align: ALIGN.HVCENTER,
       text: 'Y', // Lock icon
-      style: lock_style,
+      style: node.noutput[0] === VICTORY_SHAPE ? lock_style_victory : lock_style,
       alpha: 0.75,
     });
-    drawShapeCount(x + w/2, y + h*0.35, z, node.cost, total - node.cost_paid, ss);
+    drawShapeCount(x + w/2, y + h*0.35, z - 2, node.cost, total - node.cost_paid, ss);
 
     // draw reward
     y += h * 1.29;
@@ -1055,34 +1145,47 @@ function drawNode(node: Node): void {
 }
 
 const WALLET_W = 200;
-const WALLET_BORDER = 32;
+const WALLET_H = 54;
+const WALLET_BORDER = 4;
 const WALLET_PAD = 16;
+let temp_color = vec4();
 function drawWallet(): void {
-  let { wallet, max_links } = game_state;
-  const x0 = camera2d.x1() - WALLET_W;
-  const y0 = camera2d.y0();
+  let { max_links } = game_state;
+  let link_count = game_state.linkCount();
+  let color = islandjoy.colors[15];
+  let scale = 1;
+  if (link_count === max_links) {
+    color = islandjoy.colors[12];
+    let dt = getFrameTimestamp() - flash_status_at;
+    if (flash_status_at && dt < 1000) {
+      scale = 1 + 0.5 * abs(sin(dt / 1000 * PI));
+      color = v4lerp(temp_color, abs(sin(dt*0.015)), color, islandjoy.colors[9]);
+    }
+  }
+
+  const x0 = camera2d.x0() + (camera2d.w() - WALLET_W * scale) / 2;
+  const y0 = camera2d.y1() - WALLET_H * scale;
   let z = Z.WALLET;
-  let y = y0 + WALLET_PAD;
+  let y = y0 + WALLET_PAD * scale;
   let any = false;
 
-  // TODO: links
-  let link_count = game_state.linkCount();
+  // links
   if (link_count) {
     symbolfont.draw({
       x: x0,
       y, z,
-      w: WALLET_W/2 - WALLET_PAD/2,
-      h: ICON_W,
-      size: ICON_W,
+      w: WALLET_W/2 * scale,
+      h: ICON_W * scale,
+      size: ICON_W * scale,
       align: ALIGN.HRIGHT | ALIGN.VCENTER,
       text: `${link_count} / ${max_links}`,
       color: islandjoy.font_colors[link_count === max_links ? 12 : 0],
     });
     symbolfont.draw({
-      x: x0 + WALLET_W/2 + WALLET_PAD/2,
+      x: x0 + (WALLET_W/2 + WALLET_PAD) * scale,
       y, z,
-      h: ICON_W,
-      size: ICON_W,
+      h: ICON_W * scale,
+      size: ICON_W * scale,
       align: ALIGN.VCENTER,
       text: 'Z',
       color: islandjoy.font_colors[1],
@@ -1090,29 +1193,36 @@ function drawWallet(): void {
     any = true;
   }
 
-  let x = x0;
-  let row = 0;
-  for (let key in wallet) {
-    let shape = Number(key);
-    let count = wallet[key];
-    if (row === 4) {
-      x = x0;
-      y += ICON_W + WALLET_PAD;
-      row = 0;
-    }
-    drawShapeCount(x + ICON_W/2, y + ICON_W/2, z+1, shape, count);
-    any = true;
-    x += ICON_W + WALLET_PAD;
-    row++;
-  }
-  y += ICON_W + WALLET_PAD/2;
-
   if (any) {
     drawBox({
-      x: x0 - WALLET_BORDER, y: y0 - 500, z,
-      w: WALLET_W + WALLET_BORDER + 500, h: y - y0 + WALLET_BORDER + 500,
-    }, sprite_bubble, 0.5, islandjoy.colors[11], islandjoy.colors[0]);
+      x: x0 - WALLET_BORDER * scale, y: y0 - WALLET_BORDER * scale, z,
+      w: (WALLET_W + WALLET_BORDER * 2) * scale, h: 500,
+    }, sprite_bubble, 0.5, islandjoy.colors[11], color);
   }
+
+  // let x = x0;
+  // let row = 0;
+  // for (let key in wallet) {
+  //   let shape = Number(key);
+  //   let count = wallet[key];
+  //   if (row === 4) {
+  //     x = x0;
+  //     y += ICON_W + WALLET_PAD;
+  //     row = 0;
+  //   }
+  //   drawShapeCount(x + ICON_W/2, y + ICON_W/2, z+1, shape, count);
+  //   any = true;
+  //   x += ICON_W + WALLET_PAD;
+  //   row++;
+  // }
+  // y += ICON_W + WALLET_PAD/2;
+
+  // if (any) {
+  //   drawBox({
+  //     x: x0 - WALLET_BORDER, y: y0 - 500, z,
+  //     w: WALLET_W + WALLET_BORDER + 500, h: y - y0 + WALLET_BORDER + 500,
+  //   }, sprite_bubble, 0.5, islandjoy.colors[11], islandjoy.colors[0]);
+  // }
 }
 
 function statePlay(dt: number): void {
@@ -1126,7 +1236,7 @@ function statePlay(dt: number): void {
   drawWallet();
 
   statusTick({
-    x: camera2d.x0(), y: 0, w: camera2d.w(), h: camera2d.y1(),
+    x: camera2d.x0(), y: 0, w: camera2d.w(), h: camera2d.y1() - WALLET_H,
     z: Z.STATUS,
     pad_bottom: 10,
     pad_top: 10,
@@ -1165,6 +1275,9 @@ function statePlay(dt: number): void {
     }
     if (viewport.scale < 1) {
       viewport.scale = 1;
+    }
+    if (viewport.scale > 4) {
+      viewport.scale = 4;
     }
   }
 }
