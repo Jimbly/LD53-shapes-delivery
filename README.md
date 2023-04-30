@@ -38,17 +38,20 @@ Plan: Mini-metro Factories  "Mini-Factory"?
   * victory jingle
 * send out for playtest
 * a couple more tiers, large play space?
+* give "partial victory" if you get 1 victory token, but do not have a stable setup
+  * full unfulfilled: nodes need to be colored if all sources have at least 1 green source themselves (or, rather, just paint out from sources)
+  * Zach-like the high scores with victory (0/1/2) first and then min time, min used links, min total links (track this by how many were actually used ever!)
+  * 2 levels - intro (simpler tree), random full level 1 with good seed, then infinite past that?
 
 Polish
-* different color node background for locked ones (half way to BG?)
-* when a node is selected, clicking the same node should deselect it (except if num links = 0)
+* X different color node background for locked ones (half way to BG?)
+* X when a node is selected, clicking the same node should deselect it (except if num links = 0)
 * X link count should be bottom center - floaters/status comes out of there too?
+* links should turn red (after unlock) if they're not useful
+* what would be needed for GAMESPEED_SCALE=20 or equivalent without losing the simplicity?
 * flow should be just an emission time, not a max number on the pipe - evaluate this change after adding musical notes
 * flow should count the ones in the immediately considered pipe to decide if we're going over max (and just cap it for multi-pipe situations)
 * allow dragging from nodes to create paths
-* give "partial victory" if you get 1 victory token, but do not have a stable setup
-  * drain all but one victory tokens on that node
-* or: change max storage to 2 (or even 1 - just the literal inputs on the nodes?), and adjust flow to take that into account (deliver enough to keep it fed, but not more than 2 extra)
 * keyboard/wasd scroll - or, just auto-center the focus'd node (smooth pan?), would even work for controller
   * would need spot for canceling lines, though, just simple one in the middle
 * better way to add a bigger pipe (maybe button shows up on hover near 1/2 distance from each end or something)

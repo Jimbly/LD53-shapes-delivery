@@ -42,6 +42,7 @@ import {
   v2addScale,
   v2copy,
   v2dist,
+  v2distSq,
   v2iNormalize,
   v2lengthSq,
   v2linePointDist,
@@ -59,7 +60,7 @@ const { PI, abs, min, sin } = Math;
 
 const COLOR_FACTORY_BG = islandjoy.colors[3];
 const COLOR_FACTORY_BG_LOCKED = v4lerp(vec4(), 0.5, islandjoy.colors[3], islandjoy.colors[4]);
-const COLOR_FACTORY_BG_VICTORY = v4lerp(vec4(), 0.5, COLOR_FACTORY_BG_LOCKED, islandjoy.colors[15]);
+// const COLOR_FACTORY_BG_VICTORY = v4lerp(vec4(), 0.5, COLOR_FACTORY_BG_LOCKED, islandjoy.colors[15]);
 const COLOR_FACTORY_BORDER_LOCKED = COLOR_FACTORY_BG_LOCKED;
 const COLOR_FACTORY_BORDER_ACTIVE = islandjoy.colors[7];
 // const COLOR_FACTORY_BORDER_STARVED = islandjoy.colors[12];
@@ -93,7 +94,9 @@ let symbolfont: Font;
 
 const SCALE = 100;
 
-const TRAVEL_SPEED = 4/1000;
+const GAMESPEED_SCALE = 1;
+
+const TRAVEL_SPEED = 4/1000 * GAMESPEED_SCALE;
 
 const SHAPE_COLORS: number[] = [
   2,
@@ -182,9 +185,12 @@ function isSource(n: Node): boolean {
 function isSink(n: Node): boolean {
   return n.noutput.length === 0;
 }
+function isWildSink(n: Node): boolean {
+  return n.noutput.length === 0 && n.ninput.length === 0;
+}
 const MAX_NEED = 9;
 function nodeNeeds(target: Node, shape: Shape, max_need: number): boolean {
-  if (isSink(target)) {
+  if (isWildSink(target)) {
     return true;
   }
   if (target.unlocked) {
@@ -252,7 +258,7 @@ function removeShape(node: Node, shape: Shape): void {
   assert(false);
 }
 
-type NodeType = ([Shape, Shape, Shape, Shape] | [Shape, Shape] | [Shape]);
+type NodeType = ([Shape, Shape, Shape, Shape] | [Shape, Shape, Shape] | [Shape, Shape] | [Shape]);
 const NODE_TYPES: NodeType[] = [
   // cost, output, input1, input2
   // [-1], // free sink
@@ -268,6 +274,7 @@ const NODE_TYPES: NodeType[] = [
   [6, 7, 6, 3], // 3+6=7
   // TODO: more A+A = B kind of conversions?  analyze total cost in As of each of these steps
 ];
+const VICTORY_NODE_TYPE: NodeType = [-1, -1, VICTORY_SHAPE];
 
 const UNLOCK_COST = [
   3, 5, 10, 20, 30, 40, 50, 60, 70, 80, 90
@@ -287,7 +294,7 @@ class GameState {
   viewport = {
     x: 0, y: 0, scale: 1,
   };
-  rand = randCreate(1);
+  rand = randCreate(2);
   unlocks_by_cost: Partial<Record<Shape, number>> = {};
   unlocks_total = 0;
   defer_updates = true;
@@ -301,14 +308,37 @@ class GameState {
     // this.addLink(0, 2);
     // this.addLink(2, 1);
 
-    const W = 30;
+    const W = 40;
     const H = 30;
-    let points = poissonSample(this.rand, 3, 40, W, H);
+    let points = poissonSample(this.rand, 3, 50, W, H);
     let v2points = points.map((idx) => {
       let x = idx % W;
       let y = (idx - x) / W;
       return vec2(x - W/2, y - H/2);
     });
+    // place 4 victory sinks
+    let sinks = [
+      vec2(W/4, H/4),
+      vec2(-W/4, H/4),
+      vec2(W/4, -H/4),
+      vec2(-W/4, -H/4),
+    ];
+    // find points closest to those 4
+    let closest = [0,0,0,0];
+    for (let ii = 0; ii < v2points.length; ++ii) {
+      let pt = v2points[ii];
+      for (let jj = 0; jj < sinks.length; ++jj) {
+        let spos = sinks[jj];
+        if (v2distSq(spos, pt) < v2distSq(spos, v2points[closest[jj]])) {
+          closest[jj] = ii;
+        }
+      }
+    }
+    for (let ii = 0; ii < sinks.length; ++ii) {
+      this.addNode(v2points[closest[ii]], VICTORY_NODE_TYPE);
+    }
+    v2points = v2points.filter((v, idx) => !closest.includes(idx));
+
     v2points.sort((a: Vec2, b: Vec2) => {
       let da = v2lengthSq(a);
       let db = v2lengthSq(b);
@@ -318,7 +348,7 @@ class GameState {
       let type = ii % NODE_TYPES.length;
       this.addNode(v2points[ii], NODE_TYPES[type]);
     }
-    this.nodes[0].unlocked = true;
+    this.nodes[sinks.length].unlocked = true;
 
     this.unlocks_by_cost[2] = 1;
     this.unlocks_by_cost[3] = 2;
@@ -328,13 +358,15 @@ class GameState {
     }
 
     if (engine.DEBUG) {
-      // this.unlockNode(this.nodes[1]);
-      // this.unlockNode(this.nodes[2]);
-      // this.unlockNode(this.nodes[3]);
-      // this.unlockNode(this.nodes[4]);
-      // this.unlockNode(this.nodes[5]);
-      // this.unlockNode(this.nodes[6]);
-      // this.unlockNode(this.nodes[7]);
+      this.unlockNode(this.nodes[4]);
+      this.unlockNode(this.nodes[5]);
+      this.unlockNode(this.nodes[6]);
+      this.unlockNode(this.nodes[7]);
+      this.unlockNode(this.nodes[8]);
+      this.unlockNode(this.nodes[9]);
+      this.unlockNode(this.nodes[10]);
+      this.unlockNode(this.nodes[11]);
+      this.unlockNode(this.nodes[12]);
       // this.addLink(0, 1);
       // this.addLink(0, 1);
       // this.selected = 1;
@@ -348,7 +380,9 @@ class GameState {
     let noutput: Shape[] = [];
     let cost = type[0];
     for (let ii = 1; ii < min(type.length, 2); ++ii) {
-      noutput.push(type[ii]);
+      if (type[ii] !== -1) {
+        noutput.push(type[ii]);
+      }
     }
     for (let ii = 2; ii < type.length; ++ii) {
       ninput.push(type[ii]);
@@ -362,7 +396,7 @@ class GameState {
     let extra_links = (index === 2 || index === 5) ? 1 : 0;
 
     this.nodes.push({
-      unlocked: false,
+      unlocked: cost === -1,
       index,
       cost,
       cost_paid: 0,
@@ -444,7 +478,15 @@ class GameState {
 
   addShape(node: Node, shape: Shape): void {
     if (isSink(node)) {
-      this.wallet[shape] = (this.wallet[shape] || 0) + 1;
+      // this.wallet[shape] = (this.wallet[shape] || 0) + 1;
+      if (shape === VICTORY_SHAPE && !this.did_victory) {
+        this.did_victory = true;
+        modalDialog({
+          title: 'Victory!',
+          text: 'You win!',
+          buttons: { ok: null },
+        });
+      }
       return;
     }
     if (node.unlocked) {
@@ -534,7 +576,7 @@ class GameState {
   unlockCost(node: Node): number {
     assert(!node.unlocked);
     let count = this.unlocks_by_cost[node.cost] || 0;
-    return (UNLOCK_COST[count] || UNLOCK_COST_DEFAULT) + this.unlocks_total;
+    return ((UNLOCK_COST[count] || UNLOCK_COST_DEFAULT) + this.unlocks_total) * GAMESPEED_SCALE;
   }
 
   tickNode(node: Node): void {
@@ -566,14 +608,6 @@ class GameState {
         for (let ii = 0; ii < noutput.length; ++ii) {
           let shape = noutput[ii];
           nshapes[shape] = (nshapes[shape] || 0) + 1;
-          if (shape === VICTORY_SHAPE && !this.did_victory) {
-            this.did_victory = true;
-            modalDialog({
-              title: 'Victory!',
-              text: 'You win!',
-              buttons: { ok: null },
-            });
-          }
         }
       }
     }
@@ -857,11 +891,16 @@ function doLinking(): void {
     } else if (!game_state.hasFreeLinks()) {
       // statusPush('Need more Z !');
       flash_status_at = getFrameTimestamp();
-    } else {
+    } else if (nodePotentiallyNeeds(nodes[link_target], nodes[game_state.selected]) ||
+      nodes[link_target].unlocked && nodePotentiallyNeeds(nodes[game_state.selected], nodes[link_target])
+    ) {
       assert(link_target !== -1);
       // try to make link
       game_state.addLink(game_state.selected, link_target);
       game_state.selected = -1;
+    } else {
+      // invalid
+      game_state.selected = link_target;
     }
   } else if (game_state.selected !== -1 && click()) {
     game_state.selected = -1;
@@ -945,13 +984,26 @@ let lock_style = fontStyle(null, {
   color: islandjoy.font_colors[12],
 });
 
-let lock_style_victory = fontStyle(null, {
-  glow_inner: -2.5,
-  glow_outer: 2,
-  glow_color: 0x00000080,
-  color: islandjoy.font_colors[8],
-});
+// let lock_style_victory = fontStyle(null, {
+//   glow_inner: -2.5,
+//   glow_outer: 2,
+//   glow_color: 0x00000080,
+//   color: islandjoy.font_colors[8],
+// });
 
+function anyUnlockedProvides(shape: Shape): boolean {
+  let { nodes } = game_state;
+  for (let ii = 0; ii < nodes.length; ++ii) {
+    let node = nodes[ii];
+    if (node.unlocked) {
+      let { noutput } = node;
+      if (noutput.includes(shape)) {
+        return true;
+      }
+    }
+  }
+  return false;
+}
 
 function drawNode(node: Node): void {
   let x = node.screenpos[0] - NW2;
@@ -993,7 +1045,13 @@ function drawNode(node: Node): void {
     } else if (selectedNodeWants(node)) {
       border_color = COLOR_FACTORY_BORDER_TARGETABLE;
     } else if (node.unfulfilled) {
-      border_color = COLOR_FACTORY_BORDER_NOINPUT;
+      if (border_color !== COLOR_FACTORY_BORDER_ROLLOVER) {
+        if (node.ninput[0] === VICTORY_SHAPE && !anyUnlockedProvides(VICTORY_SHAPE)) {
+          border_color = COLOR_FACTORY_BORDER_LOCKED;
+        } else {
+          border_color = COLOR_FACTORY_BORDER_NOINPUT;
+        }
+      }
     }
   }
   // always eat clicks and mouseover, even if not interactable, do not allow clicking links behind
@@ -1011,8 +1069,8 @@ function drawNode(node: Node): void {
   //drawBox(box, sprite_bubble, 0.5, COLOR_FACTORY_BG, border_color);
   sprite_circle.drawDualTint({
     ...box,
-    color: node.noutput[0] === VICTORY_SHAPE ?
-      COLOR_FACTORY_BG_VICTORY :
+    color: /*node.noutput[0] === VICTORY_SHAPE ?
+      COLOR_FACTORY_BG_VICTORY :*/
       node.unlocked ? COLOR_FACTORY_BG :
       COLOR_FACTORY_BG_LOCKED,
     color1: border_color,
@@ -1025,7 +1083,19 @@ function drawNode(node: Node): void {
   let arrow = true;
   if (isSink(node)) {
     arrow = false;
-    things++;
+    // things++;
+
+    let ss = 1.75;
+    symbolfont.draw({
+      x, y, z: z - 3.5, w, h: h * 0.75,
+      size: ICON_W * ss,
+      align: ALIGN.HVCENTER,
+      text: '↓', // arrow down arrow
+      style: SHAPE_STYLE[VICTORY_SHAPE],
+      // alpha: 0.75,
+    });
+    y += h/8;
+
   }
   if (isSource(node)) {
     arrow = false;
@@ -1050,7 +1120,7 @@ function drawNode(node: Node): void {
       size: ICON_W * ss,
       align: ALIGN.HVCENTER,
       text: 'Y', // Lock icon
-      style: node.noutput[0] === VICTORY_SHAPE ? lock_style_victory : lock_style,
+      style: /*node.noutput[0] === VICTORY_SHAPE ? lock_style_victory : */lock_style,
       alpha: 0.75,
     });
     drawShapeCount(x + w/2, y + h*0.35, z - 2, node.cost, total - node.cost_paid, ss);
@@ -1105,16 +1175,16 @@ function drawNode(node: Node): void {
     });
     xx += (ICON_W + ICON_PAD) * scale;
   }
-  if (isSink(node)) {
-    symbolfont.draw({
-      x: xx, y, z, w: ICON_W * scale, h,
-      size: ICON_W * scale,
-      align: ALIGN.HVCENTER,
-      text: '$',
-      color: islandjoy.font_colors[8],
-    });
-    xx += (ICON_W + ICON_PAD) * scale;
-  }
+  // if (isWildSink(node)) {
+  //   symbolfont.draw({
+  //     x: xx, y, z, w: ICON_W * scale, h,
+  //     size: ICON_W * scale,
+  //     align: ALIGN.HVCENTER,
+  //     text: '$',
+  //     color: islandjoy.font_colors[8],
+  //   });
+  //   xx += (ICON_W + ICON_PAD) * scale;
+  // }
   y -= yoffs;
   if (is_converter && node.unlocked) {
     y += h;
