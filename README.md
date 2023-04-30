@@ -36,12 +36,12 @@ Plan: Mini-metro Factories  "Mini-Factory"?
   * error: not enough links
   * add/upgrade/remove link
   * victory jingle
-* send out for playtest
-* a couple more tiers, large play space?
-* give "partial victory" if you get 1 victory token, but do not have a stable setup
-  * full unfulfilled: nodes need to be colored if all sources have at least 1 green source themselves (or, rather, just paint out from sources)
-  * Zach-like the high scores with victory (0/1/2) first and then min time, min used links, min total links (track this by how many were actually used ever!)
+* X give "partial victory" if you get 1 victory token, but do not have a stable setup
+  * Zach-like the high scores with victory (0/1/2) first and then min time, min used links
   * 2 levels - intro (simpler tree), random full level 1 with good seed, then infinite past that?
+* menu button in lower left to go to high scores / mfx toggle
+* from high scores, lower left goes back to game, lower right has Restart level, upper has previous/next level buttons
+* a couple more tiers, large play space?
 
 Polish
 * X different color node background for locked ones (half way to BG?)

@@ -30,7 +30,6 @@ import {
   LINE_ALIGN,
   drawBox,
   drawLine,
-  modalDialog,
 } from 'glov/client/ui';
 import { randCreate } from 'glov/common/rand_alea';
 import {
@@ -120,6 +119,9 @@ const arrow_style = fontStyle(null, {
 const SHAPE_STYLE = SHAPE_COLORS.map((a) => fontStyle(arrow_style, {
   color: islandjoy.font_colors[a],
 }));
+const style_silver = fontStyle(arrow_style, {
+  color: islandjoy.font_colors[8],
+});
 const number_style = fontStyle(null, {
   glow_inner: 0,
   glow_outer: 2,
@@ -131,6 +133,7 @@ const number_style = fontStyle(null, {
 
 let sprite_bubble: Sprite;
 let sprite_circle: Sprite;
+let sprite_circle2: Sprite;
 function init(): void {
   sprite_bubble = spriteCreate({
     name: 'bubble',
@@ -140,6 +143,10 @@ function init(): void {
   });
   sprite_circle = spriteCreate({
     name: 'circle',
+    layers: 2,
+  });
+  sprite_circle2 = spriteCreate({
+    name: 'circle2',
     layers: 2,
   });
 }
@@ -156,7 +163,9 @@ type Node = {
   noutput: Shape[];
   nshapes: Record<Shape, number>;
   needs: Record<Shape, number>;
-  unfulfilled: boolean;
+  unfulfilled_raw: boolean;
+  fulfilled_complete: boolean;
+  satisfied_set: boolean[];
 };
 type LinkShape = {
   shape: Shape;
@@ -174,6 +183,7 @@ type Link = {
   length: number;
   forward: LinkTraffic;
   reverse: LinkTraffic;
+  fullfilled: boolean;
 };
 
 function isUnlockedSource(n: Node): boolean {
@@ -281,20 +291,23 @@ const UNLOCK_COST = [
 ];
 const UNLOCK_COST_DEFAULT = 100;
 
+let flash_victory_at: number = 0;
 
 class GameState {
   nodes: Node[] = [];
   links: Link[] = [];
   link_last_idx = 0;
   max_links = 1;
-  did_victory = false;
+  made_victory_shape = false;
+  did_victory_partial = false;
+  did_victory_full = false;
   wallet: Partial<Record<Shape, number>>;
   t: number = 0;
   dt: number = 0;
   viewport = {
     x: 0, y: 0, scale: 1,
   };
-  rand = randCreate(2);
+  rand = randCreate(3);
   unlocks_by_cost: Partial<Record<Shape, number>> = {};
   unlocks_total = 0;
   defer_updates = true;
@@ -407,7 +420,9 @@ class GameState {
       noutput,
       needs,
       nshapes: {},
-      unfulfilled: true,
+      unfulfilled_raw: true,
+      fulfilled_complete: true,
+      satisfied_set: ninput.map(() => false),
     });
   }
   findLink(start: number, end: number): Link | null {
@@ -443,6 +458,7 @@ class GameState {
       start, end,
       width: 1,
       length: v2dist(this.nodes[start].pos, this.nodes[end].pos),
+      fullfilled: false,
       forward: {
         last_t: 0,
         lshapes: []
@@ -479,13 +495,25 @@ class GameState {
   addShape(node: Node, shape: Shape): void {
     if (isSink(node)) {
       // this.wallet[shape] = (this.wallet[shape] || 0) + 1;
-      if (shape === VICTORY_SHAPE && !this.did_victory) {
-        this.did_victory = true;
-        modalDialog({
-          title: 'Victory!',
-          text: 'You win!',
-          buttons: { ok: null },
-        });
+      if (shape === VICTORY_SHAPE) {
+        if (node.fulfilled_complete && !this.did_victory_full) {
+          this.did_victory_partial = true;
+          this.did_victory_full = true;
+          flash_victory_at = getFrameTimestamp();
+          // modalDialog({
+          //   title: 'Full Victory!',
+          //   text: 'You win!',
+          //   buttons: { ok: null },
+          // });
+        } else if (!this.did_victory_partial) {
+          this.did_victory_partial = true;
+          flash_victory_at = getFrameTimestamp();
+          // modalDialog({
+          //   title: 'Partial Victory!',
+          //   text: 'You win!',
+          //   buttons: { ok: null },
+          // });
+        }
       }
       return;
     }
@@ -607,6 +635,10 @@ class GameState {
         }
         for (let ii = 0; ii < noutput.length; ++ii) {
           let shape = noutput[ii];
+          if (shape === VICTORY_SHAPE && !this.made_victory_shape) {
+            flash_victory_at = getFrameTimestamp();
+            this.made_victory_shape = true;
+          }
           nshapes[shape] = (nshapes[shape] || 0) + 1;
         }
       }
@@ -660,7 +692,7 @@ class GameState {
     }
   }
 
-  nodeUnfulfilled(node: Node): boolean {
+  nodeUnfulfilledRaw(node: Node): boolean {
     let { links, nodes } = this;
     if (isSource(node) || !node.unlocked) {
       return false;
@@ -695,10 +727,67 @@ class GameState {
     }
 
     // Update anything that only needs to change upon topography changes
-    let { nodes } = this;
+    let { nodes, links } = this;
+    let walk = [];
     for (let ii = 0; ii < nodes.length; ++ii) {
       let node = nodes[ii];
-      node.unfulfilled = this.nodeUnfulfilled(node);
+      node.unfulfilled_raw = this.nodeUnfulfilledRaw(node);
+      for (let jj = 0; jj < node.satisfied_set.length; ++jj) {
+        node.satisfied_set[jj] = false;
+      }
+      if (node.unlocked && isSource(node)) {
+        node.fulfilled_complete = true;
+        walk.push(node);
+      } else {
+        node.fulfilled_complete = false;
+      }
+    }
+    for (let ii = 0; ii < links.length; ++ii) {
+      let link = links[ii];
+      link.fullfilled = false;
+    }
+    links = links.slice(0);
+    let did_anything = true;
+    while (did_anything) {
+      did_anything = false;
+      for (let ii = links.length - 1; ii >= 0; --ii) {
+        let link = links[ii];
+        let nodea = nodes[link.start];
+        let nodeb = nodes[link.end];
+        let from;
+        let other;
+        if (nodea.fulfilled_complete) {
+          from = nodea;
+          other = nodeb;
+          link.fullfilled = true;
+        } else if (nodeb.fulfilled_complete) {
+          from = nodeb;
+          other = nodea;
+          link.fullfilled = true;
+        }
+        if (from) {
+          assert(other);
+          for (let jj = 0; jj < from.noutput.length; ++jj) {
+            let shape = from.noutput[jj];
+            for (let kk = 0; kk < other.ninput.length; ++kk) {
+              if (shape === other.ninput[kk]) {
+                other.satisfied_set[kk] = true;
+              }
+            }
+          }
+          let good = true;
+          for (let kk = 0; kk < other.ninput.length; ++kk) {
+            if (!other.satisfied_set[kk]) {
+              good = false;
+            }
+          }
+          if (good) {
+            other.fulfilled_complete = true;
+          }
+          ridx(links, ii);
+          did_anything = true;
+        }
+      }
     }
   }
 
@@ -1044,7 +1133,7 @@ function drawNode(node: Node): void {
       border_color = COLOR_FACTORY_BORDER_SELECTED;
     } else if (selectedNodeWants(node)) {
       border_color = COLOR_FACTORY_BORDER_TARGETABLE;
-    } else if (node.unfulfilled) {
+    } else if (!node.fulfilled_complete) {
       if (border_color !== COLOR_FACTORY_BORDER_ROLLOVER) {
         if (node.ninput[0] === VICTORY_SHAPE && !anyUnlockedProvides(VICTORY_SHAPE)) {
           border_color = COLOR_FACTORY_BORDER_LOCKED;
@@ -1295,6 +1384,109 @@ function drawWallet(): void {
   // }
 }
 
+
+const VICTORY_W = 230;
+const VICTORY_H = 61;
+const VICTORY_BORDER = 16;
+const VICTORY_PAD = 4;
+function drawVictory(): void {
+  if (engine.DEBUG && !flash_victory_at) {
+    game_state.did_victory_full = true;
+    game_state.made_victory_shape = true;
+    flash_victory_at = getFrameTimestamp();
+  }
+  let { did_victory_partial, did_victory_full, made_victory_shape } = game_state;
+  if (!made_victory_shape) {
+    return;
+  }
+  let color = islandjoy.colors[15];
+  let scale = 1;
+  let dt = getFrameTimestamp() - flash_victory_at;
+  if (flash_victory_at && dt < 1000) {
+    scale = 1 + 0.5 * abs(sin(dt / 1000 * PI));
+    // color = v4lerp(temp_color, abs(sin(dt*0.015)), color, islandjoy.colors[9]);
+    if (did_victory_full) {
+      symbolfont.draw({
+        x: camera2d.x0(), y: camera2d.y0(), z: 2000,
+        w: camera2d.w(),
+        h: camera2d.h(),
+        size: (scale - 1) * 900,
+        align: ALIGN.HVCENTER,
+        text: SHAPE_LABELS[VICTORY_SHAPE],
+        style: SHAPE_STYLE[VICTORY_SHAPE],
+      });
+    }
+  }
+
+  const x0 = camera2d.x0() + (camera2d.w() - VICTORY_W * scale) / 2;
+  const y0 = camera2d.y0() + VICTORY_PAD * scale;
+  let z = Z.WALLET + 10;
+  let y = y0 + 12;
+
+  let x = x0 + VICTORY_BORDER * scale;
+  let circle_extra = ICON_W * 0.5 * scale;
+  sprite_circle2.drawDualTint({
+    x: x - circle_extra, y: y - circle_extra, z: z - 1,
+    w: ICON_W * scale + circle_extra * 2,
+    h: ICON_W * scale + circle_extra * 2,
+    color: COLOR_FACTORY_BG,
+    color1: COLOR_FACTORY_BORDER_NOINPUT,
+  });
+  symbolfont.draw({
+    x, y: y + scale * 3, z,
+    w: ICON_W * scale,
+    h: ICON_W * scale,
+    size: ICON_W * scale,
+    align: ALIGN.HVCENTER,
+    text: SHAPE_LABELS[VICTORY_SHAPE],
+    style: style_silver,
+  });
+  x += (ICON_W + VICTORY_PAD + 18) * scale;
+  symbolfont.draw({
+    x, y, z,
+    w: ICON_W * scale,
+    h: ICON_W * scale,
+    size: ICON_W * scale * 2,
+    align: ALIGN.HVCENTER,
+    text: did_victory_partial ? '✔' : '✘',
+    color: islandjoy.font_colors[did_victory_partial ? 7 : 10],
+  });
+  x += (ICON_W + VICTORY_PAD) * scale * 2;
+
+  sprite_circle2.drawDualTint({
+    x: x - circle_extra, y: y - circle_extra, z: z - 1,
+    w: ICON_W * scale + circle_extra * 2,
+    h: ICON_W * scale + circle_extra * 2,
+    color: COLOR_FACTORY_BG,
+    color1: COLOR_FACTORY_BORDER_ACTIVE,
+  });
+  symbolfont.draw({
+    x, y: y + scale * 3, z,
+    w: ICON_W * scale,
+    h: ICON_W * scale,
+    size: ICON_W * scale,
+    align: ALIGN.HVCENTER,
+    text: SHAPE_LABELS[VICTORY_SHAPE],
+    style: SHAPE_STYLE[VICTORY_SHAPE],
+  });
+  x += (ICON_W + VICTORY_PAD + 18) * scale;
+  symbolfont.draw({
+    x, y, z,
+    w: ICON_W * scale,
+    h: ICON_W * scale,
+    size: ICON_W * scale * 2,
+    align: ALIGN.HVCENTER,
+    text: did_victory_full ? '✔' : '✘',
+    color: islandjoy.font_colors[did_victory_full ? 7 : 10],
+  });
+  x += (ICON_W + VICTORY_PAD) * scale * 2;
+
+  drawBox({
+    x: x0 - VICTORY_BORDER * scale, y: y0 - 500, z: z - 2,
+    w: (VICTORY_W + VICTORY_BORDER * 2) * scale, h: 500 + (VICTORY_H + VICTORY_BORDER) * scale,
+  }, sprite_bubble, 0.5, islandjoy.colors[11], color);
+}
+
 function statePlay(dt: number): void {
   camera2d.setAspectFixed2(game_width, game_height);
   gl.clearColor(islandjoy.colors[4][0], islandjoy.colors[4][1], islandjoy.colors[4][2], 1);
@@ -1304,6 +1496,7 @@ function statePlay(dt: number): void {
   let { nodes, links, viewport } = game_state;
 
   drawWallet();
+  drawVictory();
 
   statusTick({
     x: camera2d.x0(), y: 0, w: camera2d.w(), h: camera2d.y1() - WALLET_H,
