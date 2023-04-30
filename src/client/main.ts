@@ -75,7 +75,7 @@ const link_hover_style = fontStyle(null, {
   color: islandjoy.font_colors[0],
 });
 
-const VICTORY_SHAPE = 7;
+const VICTORY_SHAPE = 8;
 
 window.Z = window.Z || {};
 Z.BACKGROUND = 1;
@@ -106,8 +106,8 @@ const SHAPE_COLORS: number[] = [
   13,
   14,
   5,
-  8,
   10,
+  8,
   6,
 ];
 const SHAPE_LABELS = SHAPE_COLORS.map((a, indx) => String.fromCharCode('A'.charCodeAt(0) + indx));
@@ -271,7 +271,7 @@ const NODE_TYPES: NodeType[] = [
   // [5, 4, 1, 3], // alt: 1+3=4
   [5, 6, 5, 2], // 2+5=6
   [6, 3, 0, 4], // alt: 0+4=3
-  [6, 7, 6, 3], // 3+6=7
+  [6, 8, 6, 3], // 3+6=7
   // TODO: more A+A = B kind of conversions?  analyze total cost in As of each of these steps
 ];
 const VICTORY_NODE_TYPE: NodeType = [-1, -1, VICTORY_SHAPE];
