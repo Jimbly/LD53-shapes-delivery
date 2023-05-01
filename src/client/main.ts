@@ -396,6 +396,8 @@ class GameState {
   made_victory_shape = false;
   did_victory_partial = false;
   did_victory_full = false;
+  cur_victory_full = false;
+  cur_victory_partial = false;
   wallet: Partial<Record<Shape, number>>;
   t: number = 0;
   dt: number = 0;
@@ -611,7 +613,7 @@ class GameState {
       seconds: floor(this.t / 1000),
       links: this.links.length,
       largest_shape: max(0, this.largest_shape),
-      victory: this.did_victory_full ? 2 : this.did_victory_partial ? 1 : 0,
+      victory: this.cur_victory_full ? 2 : this.cur_victory_partial ? 1 : 0,
     };
     score_systema.setScore(this.level_idx, score_data);
     score_systemb.setScore(this.level_idx, score_data);
@@ -634,6 +636,7 @@ class GameState {
             //   buttons: { ok: null },
             // });
           }
+          this.cur_victory_partial = this.cur_victory_full = true;
           this.submitScore();
         } else {
           if (!this.did_victory_partial) {
@@ -646,6 +649,8 @@ class GameState {
             //   buttons: { ok: null },
             // });
           }
+          this.cur_victory_partial = true;
+          this.cur_victory_full = false;
           this.submitScore();
         }
       }
