@@ -1,7 +1,10 @@
 const assert = require('assert');
 const { min, round } = Math;
-const score_systema = require('./score.js');
-const score_systemb = require('./scoreb.js');
+const {
+  scoreFormatName,
+  scoreGetPlayerName,
+  scoreUpdatePlayerName,
+} = require('./score.js');
 const { scrollAreaCreate } = require('./scroll_area.js');
 const ui = require('./ui.js');
 
@@ -39,6 +42,7 @@ export function scoresDraw({
   style_header,
   color_me_background,
   color_line,
+  allow_rename,
 }) {
   assert(color_me_background[3] === 1);
   if (!font) {
@@ -47,7 +51,7 @@ export function scoresDraw({
   const pad = size;
   const hpad = pad/2;
   const scroll_max_y = y + height - (ui.button_height + pad);
-  let scores = score_system.high_scores[level_id];
+  let scores = score_system.getHighScores(level_id);
   if (!scores) {
     font.drawSizedAligned(style_score, x, y, z, size, font.ALIGN.HVCENTERFIT, width, height,
       'Loading...');
@@ -108,7 +112,7 @@ export function scoresDraw({
   function drawScoreEntry(ii, s, use_style) {
     let row = [
       `#${ii+1}`,
-      score_systema.formatName(s),
+      scoreFormatName(s),
     ];
     scoreToRow(row, s.score);
     drawSet(row, use_style);
@@ -117,7 +121,7 @@ export function scoresDraw({
     let s = scores[ii % scores.length];
     let use_style = style_score;
     let drawme = false;
-    if (s.name === score_systema.player_name && !found_me) {
+    if (s.name === scoreGetPlayerName() && !found_me) {
       use_style = style_me;
       found_me = true;
       drawme = true;
@@ -146,14 +150,14 @@ export function scoresDraw({
   x = x_save;
   y = y_save + min(scores_scroll_h, y);
   y += set_pad/2;
-  if (found_me && score_systema.player_name.indexOf('Anonymous') === 0) {
-    if (score_system === score_systema) {
+  if (found_me && scoreGetPlayerName().indexOf('Anonymous') === 0) {
+    if (allow_rename) {
       if (!scores_edit_box) {
         scores_edit_box = ui.createEditBox({
           z,
           w: width / 2,
         });
-        scores_edit_box.setText(score_systema.player_name);
+        scores_edit_box.setText(scoreGetPlayerName());
       }
 
       if (scores_edit_box.run({
@@ -168,8 +172,7 @@ export function scoresDraw({
         text: 'Update Player Name'
       })) {
         if (scores_edit_box.text) {
-          score_systema.updatePlayerName(scores_edit_box.text);
-          score_systemb.updatePlayerName(scores_edit_box.text);
+          scoreUpdatePlayerName(scores_edit_box.text);
         }
       }
     }

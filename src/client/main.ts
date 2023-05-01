@@ -27,9 +27,11 @@ import {
   mouseWheel,
 } from 'glov/client/input';
 import * as net from 'glov/client/net';
-import * as score_systema from 'glov/client/score.js';
+import {
+  ScoreSystem,
+  scoreAlloc,
+} from 'glov/client/score.js';
 import { scoresDraw } from 'glov/client/score_ui.js';
-import * as score_systemb from 'glov/client/scoreb.js';
 import * as settings from 'glov/client/settings';
 import { soundLoad, soundPlay } from 'glov/client/sound';
 import {
@@ -108,6 +110,8 @@ const game_width = 1000;
 const game_height = 1000;
 let font: Font;
 let symbolfont: Font;
+let score_systema: ScoreSystem<ScoreData>;
+let score_systemb: ScoreSystem<ScoreData>;
 
 const SCALE = 100;
 
@@ -1903,7 +1907,7 @@ function stateLevelSelect(): void {
   });
   y += TITLE_H + (button_h - TITLE_H) / 2;
 
-  let has_score = score_systema.getScore(cur_level_idx);
+  let has_score = score_systema.hasScore(cur_level_idx);
 
   const button_y = camera2d.y1() - button_h;
   const W = 1000;
@@ -1924,6 +1928,7 @@ function stateLevelSelect(): void {
     style_header,
     color_line: islandjoy.colors[2],
     color_me_background: islandjoy.colors[11],
+    allow_rename: true,
   });
 
   scoresDraw({
@@ -1941,6 +1946,7 @@ function stateLevelSelect(): void {
     style_header,
     color_line: islandjoy.colors[2],
     color_me_background: islandjoy.colors[11],
+    allow_rename: false,
   });
 
 
@@ -2123,19 +2129,30 @@ export function main(): void {
     });
   }
 
-  score_systema.init(encodeScoreLink, parseScoreLink, clone(level_list), 'LD53b');
+  score_systema = scoreAlloc({
+    score_to_value: encodeScoreLink,
+    value_to_score: parseScoreLink,
+    level_defs: clone(level_list),
+    score_key: 'LD53b'
+  });
   score_systema.updateHighScores();
-  score_systemb.init(encodeScoreTime, parseScoreTime, clone(level_list), 'LD53a');
+  score_systemb = scoreAlloc({
+    score_to_value: encodeScoreTime,
+    value_to_score: parseScoreTime,
+    level_defs: clone(level_list),
+    score_key: 'LD53a'
+  });
   score_systemb.updateHighScores();
 
-  let has_score = score_systema.getScore(0);
+  let has_score = score_systema.hasScore(0);
   if (has_score) {
     force_show_menu = true;
   }
 
   if (engine.DEBUG) {
-    cur_level_idx = 1;
-    playInit();
+    // cur_level_idx = 1;
+    // playInit();
+    stateLevelSelectInit();
   } else {
     playInit();
   }

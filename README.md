@@ -41,8 +41,6 @@ Plan: Mini-metro Factories  "Mini-Factory"?
 * X from high scores, lower left goes back to game, lower right has Restart level, upper has previous/next level buttons
 * a couple more tiers, large play space?
 
-switch links on left, time on right
-
 Polish
 * X different color node background for locked ones (half way to BG?)
 * X when a node is selected, clicking the same node should deselect it (except if num links = 0)
@@ -59,3 +57,7 @@ Polish
 * smooth zooming
 * maybe pulse factories as they produce, color fades to less bright when they're idle
 * pinch-zoom on mobile
+
+Release:
+* bug: no loading scores when paging to them
+  * generally, change high scores to be more efficient with different levels anyway
