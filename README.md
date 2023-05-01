@@ -1,7 +1,7 @@
 LD53 - Delivery
 ============================
 
-Ludum Dare 53 Entry by Jimbly - "▲●■♚" or "Deliver Shapes"
+Ludum Dare 53 Entry by Jimbly - "▲●■♚ - Shapes Delivery"
 
 * Play here: [dashingstrike.com/LudumDare/LD53/](http://www.dashingstrike.com/LudumDare/LD53/)
 * Using [Javascript libGlov/GLOV.js framework](https://github.com/Jimbly/glovjs)
