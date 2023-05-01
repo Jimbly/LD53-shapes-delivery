@@ -1,7 +1,7 @@
-LD53 - TBD
+LD53 - Delivery
 ============================
 
-Ludum Dare 53 Entry by Jimbly - "Deliver Shapes"
+Ludum Dare 53 Entry by Jimbly - "▲●■♚" or "Deliver Shapes"
 
 * Play here: [dashingstrike.com/LudumDare/LD53/](http://www.dashingstrike.com/LudumDare/LD53/)
 * Using [Javascript libGlov/GLOV.js framework](https://github.com/Jimbly/glovjs)
@@ -40,6 +40,8 @@ Plan: Mini-metro Factories  "Mini-Factory"?
 * menu button in lower left to go to high scores / mfx toggle
 * X from high scores, lower left goes back to game, lower right has Restart level, upper has previous/next level buttons
 * a couple more tiers, large play space?
+
+switch links on left, time on right
 
 Polish
 * X different color node background for locked ones (half way to BG?)
