@@ -354,14 +354,18 @@ type LevelDef = {
 const LEVEL_DEFS: LevelDef[] = [{
   // 30x24x1 = 11?, slightly finicky
   // 30x24x2 = 13, slightly finicky, not as bad, but too many links
-  seed: 2,
+  // 30x24x3 = 10, has clean solution
+  seed: 3,
   node_types: NODE_TYPES_SIMPLE,
   w: 30,
   h: 24,
   kfactor: 10,
   num_sinks: 1,
 }, {
-  seed: 4, // 3 = 18
+  // 3 = 18;
+  // 4 = utter mess
+  // 5 = 19, messy
+  seed: 3,
   node_types: NODE_TYPES_DEF,
   w: 40,
   h: 30,
@@ -403,7 +407,7 @@ class GameState {
   defer_updates = true;
   level_idx: number;
   level_def!: LevelDef;
-  largest_shape = 0;
+  largest_shape = -1;
 
   allocLevel(level_def: LevelDef): void {
     this.level_def = level_def;
@@ -480,6 +484,9 @@ class GameState {
       // this.unlockNode(this.nodes[10]);
       // this.unlockNode(this.nodes[11]);
       // this.unlockNode(this.nodes[12]);
+      for (let ii = 0; ii < this.nodes.length; ++ii) {
+        // this.unlockNode(this.nodes[ii]);
+      }
       // this.addLink(0, 1);
       // this.addLink(0, 1);
       // this.selected = 1;
@@ -508,6 +515,9 @@ class GameState {
     let index = this.nodes.length;
     let { num_sinks } = this.level_def;
     let extra_links = (index === 2+num_sinks || index === 5+num_sinks) ? 1 : 0;
+    if (this.level_idx === 0 && index === 3+num_sinks) {
+      extra_links = 1;
+    }
 
     this.nodes.push({
       unlocked: cost === -1,
@@ -600,7 +610,7 @@ class GameState {
     let score_data: ScoreData = {
       seconds: floor(this.t / 1000),
       links: this.links.length,
-      largest_shape: this.largest_shape,
+      largest_shape: max(0, this.largest_shape),
       victory: this.did_victory_full ? 2 : this.did_victory_partial ? 1 : 0,
     };
     score_systema.setScore(this.level_idx, score_data);
@@ -1056,8 +1066,11 @@ function lineLineIntersectIgnoreEnds(p1: Vec2, p2: Vec2, p3: Vec2, p4: Vec2): bo
           // both going in opposite direcitons
           return false;
         }
+        return true;
+      } else {
+        // no shared point, this is wrong doesn't catch  *---*  *---*
+        return false;
       }
-      return true;
     }
     return false;
   }
@@ -1810,7 +1823,7 @@ function drawScoreProgress(obj: {
   }
 }
 
-const SCORE_COLUMNSA: ColumnDef[] = [
+const SCORE_COLUMNSB: ColumnDef[] = [
   // widths are just proportional, scaled relative to `width` passed in
   { name: '', width: 12, align: ALIGN.HFIT | ALIGN.HRIGHT | ALIGN.VCENTER },
   { name: '', width: 60, align: ALIGN.HFIT | ALIGN.VCENTER }, // Name
@@ -1818,7 +1831,7 @@ const SCORE_COLUMNSA: ColumnDef[] = [
   { name: '', width: 24 }, // Time
 //  { name: 'Z', width: 12, draw: drawScoreLink }, // Link
 ];
-const SCORE_COLUMNSB: ColumnDef[] = [
+const SCORE_COLUMNSA: ColumnDef[] = [
   // widths are just proportional, scaled relative to `width` passed in
   { name: '', width: 12, align: ALIGN.HFIT | ALIGN.HRIGHT | ALIGN.VCENTER },
   { name: '', width: 60, align: ALIGN.HFIT | ALIGN.VCENTER }, // Name
@@ -1832,7 +1845,7 @@ const style_header = fontStyleColored(null, islandjoy.font_colors[1]);
 function pad2(v: number): string {
   return `0${v}`.slice(-2);
 }
-function myScoreToRowA(row: unknown[], score: ScoreData): void {
+function myScoreToRowB(row: unknown[], score: ScoreData): void {
   let seconds = score.seconds;
   let s = (seconds % 60);
   seconds -= s;
@@ -1841,7 +1854,7 @@ function myScoreToRowA(row: unknown[], score: ScoreData): void {
     `${m}:${pad2(s)}`);
 }
 
-function myScoreToRowB(row: unknown[], score: ScoreData): void {
+function myScoreToRowA(row: unknown[], score: ScoreData): void {
   row.push(score.victory ? 20 + score.victory : score.largest_shape,
     score.links);
 }
@@ -2105,9 +2118,9 @@ export function main(): void {
     });
   }
 
-  score_systema.init(encodeScoreTime, parseScoreTime, clone(level_list), 'LD53a');
+  score_systema.init(encodeScoreLink, parseScoreLink, clone(level_list), 'LD53b');
   score_systema.updateHighScores();
-  score_systemb.init(encodeScoreLink, parseScoreLink, clone(level_list), 'LD53b');
+  score_systemb.init(encodeScoreTime, parseScoreTime, clone(level_list), 'LD53a');
   score_systemb.updateHighScores();
 
   let has_score = score_systema.getScore(0);
@@ -2115,8 +2128,9 @@ export function main(): void {
     force_show_menu = true;
   }
 
-  if (engine.DEBUG && false) {
-    stateLevelSelectInit();
+  if (engine.DEBUG) {
+    cur_level_idx = 1;
+    playInit();
   } else {
     playInit();
   }
