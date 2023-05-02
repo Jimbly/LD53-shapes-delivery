@@ -44,6 +44,7 @@ import { Sprite, spriteCreate } from 'glov/client/sprites';
 import {
   LINE_ALIGN,
   buttonText,
+  buttonWasFocused,
   drawBox,
   drawLine,
   playUISound,
@@ -1886,6 +1887,12 @@ function stateLevelSelect(): void {
     disabled: cur_level_idx === 0,
   })) {
     cur_level_idx--;
+    score_systema.forceRefreshScores(cur_level_idx);
+    score_systemb.forceRefreshScores(cur_level_idx);
+  }
+  if (buttonWasFocused() && cur_level_idx > 0) {
+    score_systema.prefetchScores(cur_level_idx - 1);
+    score_systemb.prefetchScores(cur_level_idx - 1);
   }
 
   if (buttonText({
@@ -1895,6 +1902,12 @@ function stateLevelSelect(): void {
     disabled: cur_level_idx === MAX_LEVEL - 1,
   })) {
     cur_level_idx++;
+    score_systema.forceRefreshScores(cur_level_idx);
+    score_systemb.forceRefreshScores(cur_level_idx);
+  }
+  if (buttonWasFocused() && cur_level_idx < MAX_LEVEL - 1) {
+    score_systema.prefetchScores(cur_level_idx + 1);
+    score_systemb.prefetchScores(cur_level_idx + 1);
   }
 
   y += (button_h - TITLE_H) / 2;
@@ -1920,7 +1933,7 @@ function stateLevelSelect(): void {
     z: Z.UI,
     size: 24,
     line_height: 24+8,
-    level_id: String(cur_level_idx),
+    level_index: cur_level_idx,
     columns: SCORE_COLUMNSA,
     scoreToRow: myScoreToRowA,
     style_score,
@@ -1938,7 +1951,7 @@ function stateLevelSelect(): void {
     z: Z.UI,
     size: 24,
     line_height: 24+8,
-    level_id: String(cur_level_idx),
+    level_index: cur_level_idx,
     columns: SCORE_COLUMNSB,
     scoreToRow: myScoreToRowB,
     style_score,
@@ -2122,27 +2135,19 @@ export function main(): void {
       victory,
     };
   }
-  let level_list = [];
-  for (let ii = 0; ii < MAX_LEVEL; ++ii) {
-    level_list.push({
-      name: String(ii),
-    });
-  }
 
   score_systema = scoreAlloc({
     score_to_value: encodeScoreLink,
     value_to_score: parseScoreLink,
-    level_defs: clone(level_list),
+    level_defs: MAX_LEVEL,
     score_key: 'LD53b'
   });
-  score_systema.updateHighScores();
   score_systemb = scoreAlloc({
     score_to_value: encodeScoreTime,
     value_to_score: parseScoreTime,
-    level_defs: clone(level_list),
+    level_defs: MAX_LEVEL,
     score_key: 'LD53a'
   });
-  score_systemb.updateHighScores();
 
   let has_score = score_systema.hasScore(0);
   if (has_score) {

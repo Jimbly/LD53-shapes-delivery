@@ -33,7 +33,7 @@ export function scoresDraw({
   score_system,
   x, y, z,
   width, height,
-  level_id,
+  level_index,
   size, line_height,
   columns,
   scoreToRow,
@@ -51,7 +51,7 @@ export function scoresDraw({
   const pad = size;
   const hpad = pad/2;
   const scroll_max_y = y + height - (ui.button_height + pad);
-  let scores = score_system.getHighScores(level_id);
+  let scores = score_system.getHighScores(level_index);
   if (!scores) {
     font.drawSizedAligned(style_score, x, y, z, size, font.ALIGN.HVCENTERFIT, width, height,
       'Loading...');
@@ -111,7 +111,7 @@ export function scoresDraw({
   let found_me = false;
   function drawScoreEntry(ii, s, use_style) {
     let row = [
-      `#${ii+1}`,
+      ii === null ? '--' : `#${ii+1}`,
       scoreFormatName(s),
     ];
     scoreToRow(row, s.score);
@@ -143,6 +143,20 @@ export function scoresDraw({
     } else {
       y += line_height;
     }
+  }
+  if (!found_me && score_system.getScore(level_index)) {
+    let my_score = score_system.getScore(level_index);
+    let y_save2 = y;
+    if (y < scroll_min_visible_y) {
+      y = scroll_min_visible_y;
+    } else if (y > scroll_max_visible_y) {
+      y = scroll_max_visible_y;
+    }
+    z += 20;
+    ui.drawRect(x, y, x + width + 1, y + line_height - 1, z - 1, color_me_background);
+    drawScoreEntry(null, { name: scoreGetPlayerName(), score: my_score }, style_me);
+    z -= 20;
+    y = y_save2 + line_height;
   }
   let set_pad = size / 2;
   y += set_pad/2;

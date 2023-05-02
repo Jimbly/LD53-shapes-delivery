@@ -6,7 +6,9 @@ import { VoidFunc } from 'glov/common/types';
 import { fetch } from './fetch';
 
 const PLAYER_NAME_KEY = 'ld.player_name';
-const MAX_SCORES = 20000;
+const MAX_SCORES = 1000;
+const SCORE_REFRESH_TIME = 5*60*1000; // also refreshes if we submit a new score, or forceRefreshScores() is called
+const SUBMIT_RATELIMIT = 5000; // Only kicks in if two are in-flight at the same time
 
 let player_name: string;
 let lsd = (function (): Partial<Record<string, string>> {
@@ -38,25 +40,12 @@ export function scoreGetPlayerName(): string {
   return player_name;
 }
 
-// TODO: refactor to use fetch() directly
-function fetchJSON<T>(param: {
-  url: string;
-  success?: (o: T) => void;
-  error?: (err: string) => void;
-}): void {
+function fetchJSON2<T>(url: string, cb: (err: string | undefined, o: T) => void): void {
   fetch({
-    url: param.url,
+    url: url,
     response_type: 'json',
   }, (err: string | undefined, resp: unknown) => {
-    if (err) {
-      if (param.error) {
-        param.error(err);
-      }
-      return;
-    }
-    if (param.success) {
-      param.success(resp as T);
-    }
+    cb(err, resp as T);
   });
 }
 
@@ -70,12 +59,15 @@ type ScoreTypeInternal<ScoreType> = ScoreType & {
 type LevelDefInternal<ScoreType> = {
   name: LevelName;
   local_score?: ScoreTypeInternal<ScoreType>; // internal to score system
+  last_refresh_time?: number;
+  refresh_in_flight?: boolean;
+  save_in_flight?: boolean;
 };
 export type ScoreSystem<T> = ScoreSystemImpl<T>;
 export type ScoreSystemParam<ScoreType> = {
   score_to_value: (s: ScoreType) => number;
   value_to_score: (v: number) => ScoreType;
-  level_defs: LevelDef[];
+  level_defs: LevelDef[] | number; // List of {name}s or just a number of (numerically indexed) levels
   score_key: string;
 };
 type HighScoreListEntryRaw = {
@@ -97,15 +89,29 @@ class ScoreSystemImpl<ScoreType> {
   constructor(param: ScoreSystemParam<ScoreType>) {
     this.score_to_value = param.score_to_value;
     this.value_to_score = param.value_to_score;
-    this.level_defs = param.level_defs as LevelDefInternal<ScoreType>[]; // optional name filled below
+    let level_defs: LevelDefInternal<ScoreType>[] = [];
+    if (typeof param.level_defs === 'number') {
+      for (let level_idx = 0; level_idx < param.level_defs; ++level_idx) {
+        level_defs.push({
+          name: '', // name filled below
+        });
+      }
+    } else {
+      for (let ii = 0; ii < param.level_defs.length; ++ii) {
+        level_defs.push({
+          name: param.level_defs[ii].name || '', // name filled below
+        });
+      }
+    }
+    this.level_defs = level_defs;
+
     this.SCORE_KEY = param.score_key;
     this.LS_KEY = this.SCORE_KEY.toLowerCase();
 
-    // TODO: only fetch local_score, don't actually query server for all scores
-    for (let level_idx = 0; level_idx < this.level_defs.length; ++level_idx) {
-      let ld = this.level_defs[level_idx];
+    for (let level_idx = 0; level_idx < level_defs.length; ++level_idx) {
+      let ld = level_defs[level_idx];
       if (!ld.name) {
-        if (this.level_defs.length === 1) {
+        if (level_defs.length === 1) {
           ld.name = 'the';
         } else {
           ld.name = String(level_idx);
@@ -115,12 +121,13 @@ class ScoreSystemImpl<ScoreType> {
     }
   }
 
-  high_scores: Partial<Record<LevelName, HighScoreList<ScoreType>>> = {};
-  getHighScores(level: LevelName): HighScoreList<ScoreType> | null {
-    return this.high_scores[level] || null;
+  high_scores: Partial<Record<number, HighScoreList<ScoreType>>> = {};
+  getHighScores(level_idx: number): HighScoreList<ScoreType> | null {
+    this.refreshScores(level_idx);
+    return this.high_scores[level_idx] || null;
   }
 
-  private handleScoreResp(level: LevelName, scores: HighScoreListRaw): void {
+  private handleScoreResp(level_idx: number, scores: HighScoreListRaw): void {
     let list: HighScoreList<ScoreType> = [];
     scores.forEach((score) => {
       list.push({
@@ -128,73 +135,108 @@ class ScoreSystemImpl<ScoreType> {
         score: this.value_to_score(score.score),
       });
     });
-    this.high_scores[level] = list;
+    this.high_scores[level_idx] = list;
   }
-  private refreshScores(level: LevelName, changed_cb?: VoidFunc): void {
-    fetchJSON({
-      url: `${score_host}/api/scoreget?key=${this.SCORE_KEY}.${level}&limit=${MAX_SCORES}`,
-      success: (scores: HighScoreListRaw) => {
-        this.handleScoreResp(level, scores);
+  private refreshScores(level_idx: number, changed_cb?: VoidFunc): void {
+    let ld = this.level_defs[level_idx];
+    if (!ld) {
+      ld = this.level_defs[level_idx] = {
+        name: String(level_idx),
+      };
+    }
+    if (ld.refresh_in_flight) {
+      changed_cb?.();
+      return;
+    }
+    let now = Date.now();
+    if (!ld.last_refresh_time || now - ld.last_refresh_time > SCORE_REFRESH_TIME) {
+      // do it
+    } else {
+      changed_cb?.();
+      return;
+    }
+    ld.last_refresh_time = now;
+    ld.refresh_in_flight = true;
+    fetchJSON2(
+      `${score_host}/api/scoreget?key=${this.SCORE_KEY}.${ld.name}&limit=${MAX_SCORES}`,
+      (err: string | undefined, scores: HighScoreListRaw) => {
+        ld.refresh_in_flight = false;
+        if (!err) {
+          this.handleScoreResp(level_idx, scores);
+        }
         changed_cb?.();
       }
-    });
+    );
+  }
+
+  forceRefreshScores(level_idx: number, timeout?: number): void {
+    if (timeout === undefined) {
+      timeout = 5000;
+    }
+    let ld = this.level_defs[level_idx];
+    if (ld.last_refresh_time && ld.last_refresh_time < Date.now() - timeout) {
+      // Old enough we can bump it up now
+      ld.last_refresh_time = 0;
+    }
+    this.refreshScores(level_idx);
+  }
+
+  prefetchScores(level_idx: number): void {
+    this.refreshScores(level_idx);
   }
 
   private clearScore(level: LevelName, old_player_name: string, cb?: VoidFunc): void {
     if (!old_player_name) {
       return;
     }
-    fetchJSON({
-      url: `${score_host}/api/scoreclear?key=${this.SCORE_KEY}.${level}&name=${old_player_name}`,
-      success: cb,
-    });
-  }
-
-  private submitScore(level: LevelName, score: ScoreType, cb?: VoidFunc): void {
-    let high_score = this.score_to_value(score);
-    if (!player_name) {
-      return;
-    }
-    fetchJSON({
-      url: `${score_host}/api/scoreset?key=${this.SCORE_KEY}.${level}&name=${player_name}&score=${high_score}`,
-      success: (scores: HighScoreListRaw) => {
-        this.handleScoreResp(level, scores);
-        cb?.();
-      }
-    });
-  }
-
-  need_update = false;
-  score_update_time = 0;
-  updateHighScores(changed_cb?: VoidFunc): void {
-    let now = Date.now();
-    if (now - this.score_update_time > 5*60*1000 || this.need_update) {
-      this.need_update = false;
-      this.score_update_time = now;
-      for (let level_idx in this.level_defs) {
-        this.refreshScores(this.level_defs[level_idx].name, changed_cb);
-      }
-    } else {
-      changed_cb?.();
-    }
-  }
-
-  private saveScore(ld_in: LevelDef, obj_in: ScoreType, cb?: VoidFunc): void {
-    let obj = obj_in as ScoreTypeInternal<ScoreType>;
-    let ld = ld_in as LevelDefInternal<ScoreType>;
-    ld.local_score = obj;
-    let key = `${this.LS_KEY}.score_${ld.name}`;
-    lsd[key] = JSON.stringify(obj);
-    this.submitScore(ld.name, obj, function () {
-      obj.submitted = true;
-      if (obj === ld.local_score) {
-        lsd[key] = JSON.stringify(obj);
-      }
+    fetchJSON2(`${score_host}/api/scoreclear?key=${this.SCORE_KEY}.${level}&name=${old_player_name}`, () => {
       cb?.();
     });
   }
 
-  // TODO: these should be by name or index?
+  private submitScore(level_idx: number, score: ScoreType, cb?: VoidFunc): void {
+    let level = this.level_defs[level_idx].name;
+    let high_score = this.score_to_value(score);
+    if (!player_name) {
+      return;
+    }
+    fetchJSON2(
+      `${score_host}/api/scoreset?key=${this.SCORE_KEY}.${level}&name=${player_name}&score=${high_score}`,
+      (err: string | undefined, scores: HighScoreListRaw) => {
+        if (!err) {
+          this.handleScoreResp(level_idx, scores);
+        }
+        cb?.();
+      },
+    );
+  }
+
+  private saveScore(level_idx: number, obj_in: ScoreType): void {
+    let ld = this.level_defs[level_idx];
+    let obj = obj_in as ScoreTypeInternal<ScoreType>;
+    ld.local_score = obj;
+    let key = `${this.LS_KEY}.score_${ld.name}`;
+    lsd[key] = JSON.stringify(obj);
+    if (ld.save_in_flight) {
+      return;
+    }
+    let doSubmit = (): void => {
+      this.submitScore(level_idx, obj, () => {
+        ld.save_in_flight = false;
+        obj.submitted = true;
+        if (obj === ld.local_score) {
+          lsd[key] = JSON.stringify(obj);
+        } else {
+          // new score in the meantime
+          ld.save_in_flight = true;
+          setTimeout(doSubmit, SUBMIT_RATELIMIT);
+        }
+      });
+    };
+    ld.save_in_flight = true;
+    doSubmit();
+  }
+
   hasScore(level_idx: number): boolean {
     return Boolean(this.getScore(level_idx));
   }
@@ -212,31 +254,27 @@ class ScoreSystemImpl<ScoreType> {
       }
       ld.local_score = ret;
       if (!ret.submitted) {
-        this.saveScore(ld, ret);
+        this.saveScore(level_idx, ret);
       }
       return ret;
     }
     return null;
   }
 
-  setScore(level_idx: number, score: ScoreType, cb?: VoidFunc): void {
+  setScore(level_idx: number, score: ScoreType): void {
     let ld = this.level_defs[level_idx];
     let encoded = this.score_to_value(score) || 0;
     let encoded_local = ld.local_score && this.score_to_value(ld.local_score) || 0;
     if (encoded > encoded_local) {
-      this.saveScore(ld, score, cb);
-    } else {
-      cb?.();
+      this.saveScore(level_idx, score);
     }
   }
 
   onUpdatePlayerName(old_name: string): void {
-    this.level_defs.forEach((ld) => {
+    this.level_defs.forEach((ld, level_idx) => {
       if (ld.local_score) {
         this.clearScore(ld.name, old_name, () => {
-          this.saveScore(ld, ld.local_score!, () => {
-            this.need_update = true;
-          });
+          this.saveScore(level_idx, ld.local_score!);
         });
       }
     });
