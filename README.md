@@ -57,7 +57,3 @@ Polish
 * smooth zooming
 * maybe pulse factories as they produce, color fades to less bright when they're idle
 * pinch-zoom on mobile
-
-Release:
-* bug: no loading scores when paging to them
-  * generally, change high scores to be more efficient with different levels anyway
