@@ -51,6 +51,7 @@ import {
 } from 'glov/client/ui';
 import { randCreate } from 'glov/common/rand_alea';
 import {
+  clamp,
   clone,
   lerp,
   ridx,
@@ -58,6 +59,7 @@ import {
 } from 'glov/common/util';
 import {
   Vec2,
+  v2add,
   v2addScale,
   v2copy,
   v2dist,
@@ -67,6 +69,7 @@ import {
   v2linePointDist,
   v2same,
   v2scale,
+  v2set,
   v2sub,
   v4lerp,
   vec2,
@@ -1680,6 +1683,11 @@ function drawVictory(): void {
   }, sprite_bubble, 0.5, islandjoy.colors[11], color);
 }
 
+let t1start = vec2();
+let t1end = vec2();
+let t2start = vec2();
+let t2end = vec2();
+let zoom_around = vec2();
 let force_show_menu = engine.DEBUG;
 function statePlay(dt: number): void {
   camera2d.setAspectFixed2(game_width, game_height);
@@ -1717,8 +1725,8 @@ function statePlay(dt: number): void {
   link_clicked = false;
   link_target = -1;
   camera2d.setAspectFixed(game_width * viewport.scale, game_height * viewport.scale);
-  camera2d.shift((viewport.x * SCALE - game_width/2)*viewport.scale,
-    (viewport.y * SCALE - game_height/2)*viewport.scale);
+  camera2d.shift(viewport.x * SCALE - game_width/2 * viewport.scale,
+    viewport.y * SCALE - game_height/2 * viewport.scale);
   for (let ii = 0; ii < links.length; ++ii) {
     let link = links[ii];
     drawLink(link);
@@ -1733,23 +1741,48 @@ function statePlay(dt: number): void {
   let drag_ret = drag({
     min_dist: 10,
   });
+  let new_scale = viewport.scale;
   if (drag_ret) {
-    viewport.x -= drag_ret.delta[0] / SCALE / viewport.scale;
-    viewport.y -= drag_ret.delta[1] / SCALE / viewport.scale;
+    v2copy(delta, drag_ret.delta);
+    v2copy(t1end, drag_ret.cur_pos);
+    v2addScale(t1start, t1end, drag_ret.delta, -1);
+    let second_drag = drag();
+    if (second_drag) {
+      // look for zoom
+      v2copy(t2end, second_drag.cur_pos);
+      v2addScale(t2start, t2end, second_drag.delta, -1);
+      let dstart = v2dist(t1start, t2start);
+      let dend = v2dist(t1end, t2end);
+      let pinch = dend - dstart;
+      new_scale -= pinch * -0.005;
+      v2add(zoom_around, t1end, t2end);
+      v2scale(zoom_around, zoom_around, 0.5);
+    } else {
+      viewport.x -= delta[0] / SCALE;
+      viewport.y -= delta[1] / SCALE;
+    }
   }
   let zoom = mouseWheel();
   if (zoom) {
     if (zoom < 0) {
-      viewport.scale *= 1.25;
+      new_scale *= 1.25;
     } else {
-      viewport.scale /= 1.25;
+      new_scale /= 1.25;
     }
-    if (viewport.scale < 1) {
-      viewport.scale = 1;
+    if (engine.defines.COMPO) { // Retain crappy zooming around origin instead of cursor
+      v2set(zoom_around, 0, 0);
+    } else {
+      mousePos(zoom_around);
     }
-    if (viewport.scale > 4) {
-      viewport.scale = 4;
-    }
+  }
+  new_scale = clamp(new_scale, 1, 4);
+  if (new_scale !== viewport.scale) {
+    let inv_factor = viewport.scale / new_scale;
+    let x = zoom_around[0] / SCALE;
+    let y = zoom_around[1] / SCALE;
+    viewport.x += (x - viewport.x) - (x - viewport.x) / inv_factor;
+    viewport.y += (y - viewport.y) - (y - viewport.y) / inv_factor;
+    viewport.scale = new_scale;
   }
 
   if (keyDownEdge(KEYS.ESC)) {
