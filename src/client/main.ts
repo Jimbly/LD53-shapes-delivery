@@ -54,6 +54,7 @@ import { randCreate } from 'glov/common/rand_alea';
 import {
   clamp,
   clone,
+  easeIn,
   lerp,
   ridx,
   sign,
@@ -502,7 +503,7 @@ class GameState {
       for (let ii = 0; ii < this.nodes.length; ++ii) {
         // this.unlockNode(this.nodes[ii]);
       }
-      // this.addLink(0, 1);
+      // this.addLink(1, 2);
       // this.addLink(0, 1);
       // this.selected = 1;
     }
@@ -1771,10 +1772,17 @@ function statePlay(dt: number): void {
 
   const button_h = 128;
   if (game_state.level_idx !== 0 || game_state.made_victory_shape || force_show_menu) {
+    let scale = 1;
+    if (game_state.did_victory_full && !engine.defines.COMPO) {
+      let t = getFrameTimestamp() % 3000;
+      if (t < 1000) {
+        scale += easeIn(1 - abs(1 - t / 500), 4) * 0.4;
+      }
+    }
     if (buttonText({
-      x: 0, y: camera2d.y1() - button_h,
-      w: button_h, h: button_h,
-      font_height: button_h * 0.5,
+      x: 0, y: camera2d.y1() - button_h * scale,
+      w: button_h * scale, h: button_h * scale,
+      font_height: button_h * 0.5 * scale,
       font: symbolfont,
       text: 'V', // menu
     })) {
@@ -2263,8 +2271,8 @@ export function main(): void {
 
   if (engine.DEBUG) {
     // cur_level_idx = 1;
-    // playInit();
-    stateLevelSelectInit();
+    playInit();
+    // stateLevelSelectInit();
   } else {
     playInit();
   }
