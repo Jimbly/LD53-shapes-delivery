@@ -20,6 +20,7 @@ import {
   KEYS,
   click,
   drag,
+  inputTouchMode,
   keyDown,
   keyDownEdge,
   mouseOver,
@@ -1517,6 +1518,7 @@ function drawWallet(): void {
       color = v4lerp(temp_color, abs(sin(dt*0.015)), color, islandjoy.colors[9]);
     }
   }
+  scale *= inputTouchMode() ? 2 : 1;
 
   const x0 = camera2d.x0() + (camera2d.w() - WALLET_W * scale) / 2;
   const y0 = camera2d.y1() - WALLET_H * scale;
@@ -1552,7 +1554,7 @@ function drawWallet(): void {
     drawBox({
       x: x0 - WALLET_BORDER * scale, y: y0 - WALLET_BORDER * scale, z,
       w: (WALLET_W + WALLET_BORDER * 2) * scale, h: 500,
-    }, sprite_bubble, 0.5, islandjoy.colors[11], color);
+    }, sprite_bubble, 0.5 * scale, islandjoy.colors[11], color);
   }
 
   // let x = x0;
@@ -1613,6 +1615,7 @@ function drawVictory(): void {
       });
     }
   }
+  scale *= inputTouchMode() ? 2 : 1;
 
   const x0 = camera2d.x0() + (camera2d.w() - VICTORY_W * scale) / 2;
   const y0 = camera2d.y0() + VICTORY_PAD * scale;
@@ -1680,7 +1683,7 @@ function drawVictory(): void {
   drawBox({
     x: x0 - VICTORY_BORDER * scale, y: y0 - 500, z: z - 2,
     w: (VICTORY_W + VICTORY_BORDER * 2) * scale, h: 500 + (VICTORY_H + VICTORY_BORDER) * scale,
-  }, sprite_bubble, 0.5, islandjoy.colors[11], color);
+  }, sprite_bubble, 0.5 * scale, islandjoy.colors[11], color);
 }
 
 let t1start = vec2();
@@ -1775,7 +1778,7 @@ function statePlay(dt: number): void {
       mousePos(zoom_around);
     }
   }
-  new_scale = clamp(new_scale, 1, 4);
+  new_scale = clamp(new_scale, 0.5, 4);
   if (new_scale !== viewport.scale) {
     let inv_factor = viewport.scale / new_scale;
     let x = zoom_around[0] / SCALE;
