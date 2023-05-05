@@ -50,10 +50,10 @@ Polish
 * flow should be just an emission time, not a max number on the pipe - evaluate this change after adding musical notes
 * flow should count the ones in the immediately considered pipe to decide if we're going over max (and just cap it for multi-pipe situations)
 * alternate numbers that are just dots, show them under the inputs/outputs, get rid of inventory?
-* allow dragging from nodes to create paths
+* (post-compo) allow dragging from nodes to create paths
 * keyboard/wasd scroll - or, just auto-center the focus'd node (smooth pan?), would even work for controller
   * would need spot for canceling lines, though, just simple one in the middle
 * better way to add a bigger pipe (maybe button shows up on hover near 1/2 distance from each end or something)
 * smooth zooming
 * maybe pulse factories as they produce, color fades to less bright when they're idle
-* pinch-zoom on mobile
+* (post-compo) pinch-zoom on mobile

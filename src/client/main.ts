@@ -158,6 +158,10 @@ const number_style = fontStyle(null, {
   color: islandjoy.font_colors[0],
 });
 
+function allowDrag(): boolean {
+  return inputTouchMode() || !engine.defines.COMPO;
+}
+
 let sprite_bubble: Sprite;
 let sprite_circle: Sprite;
 let sprite_circle2: Sprite;
@@ -946,6 +950,7 @@ class GameState {
   }
 
   selected = -1;
+  selected_dragging = false;
 }
 let game_state: GameState;
 
@@ -1158,17 +1163,22 @@ function doLinking(): void {
   if (link_clicked) {
     if (game_state.selected === -1) {
       game_state.selected = link_target;
+      game_state.selected_dragging = false;
       playUISound('button_click');
     } else if (!link_valid) {
       game_state.selected = -1;
+      game_state.selected_dragging = false;
       playUISound('error_chord');
     } else if (game_state.selected === link_target) {
       game_state.selected = -1;
+      game_state.selected_dragging = false;
       playUISound('link_deselect');
     } else if (!game_state.hasFreeLinks()) {
       // statusPush('Need more Z !');
       flash_status_at = getFrameTimestamp();
       playUISound('error_chord');
+      game_state.selected = -1;
+      game_state.selected_dragging = false;
     } else if (nodePotentiallyNeeds(nodes[link_target], nodes[game_state.selected]) ||
       nodes[link_target].unlocked && nodePotentiallyNeeds(nodes[game_state.selected], nodes[link_target])
     ) {
@@ -1176,16 +1186,19 @@ function doLinking(): void {
       // try to make link
       game_state.addLink(game_state.selected, link_target);
       game_state.selected = -1;
+      game_state.selected_dragging = false;
       playUISound('link_make');
     } else {
       // invalid
       game_state.selected = link_target;
+      game_state.selected_dragging = false;
       playUISound('button_click');
     }
   } else if (game_state.selected !== -1) {
     if (click() || keyDownEdge(KEYS.ESC)) {
       playUISound('link_deselect');
       game_state.selected = -1;
+      game_state.selected_dragging = false;
     }
   }
 
@@ -1197,7 +1210,7 @@ function doLinking(): void {
       let nodea = nodes[link.start];
       let nodeb = nodes[link.end];
       let d = v2linePointDist(nodea.screenpos, nodeb.screenpos, mouse_pos);
-      if (d < LINE_W * 2) {
+      if (d < LINE_W * (engine.defines.COMPO ? 2 : 4)) {
         did_link = true;
         let link_key = `link${link.uid}`;
         let spot_ret = spot({
@@ -1289,6 +1302,8 @@ function anyUnlockedProvides(shape: Shape): boolean {
   return false;
 }
 
+let selected_dragging_this_frame = false;
+let potential_drag = -1;
 function drawNode(node: Node): void {
   let x = node.screenpos[0] - NW2;
   let y = node.screenpos[1] - NH2;
@@ -1306,23 +1321,67 @@ function drawNode(node: Node): void {
 
     if (game_state.selected === node.index) {
       border_color = COLOR_FACTORY_BORDER_SELECTED;
+      if (!game_state.selected_dragging && allowDrag()) {
+        let drag_ret = drag({
+          ...box,
+          min_dist: 10,
+        });
+        if (drag_ret) {
+          game_state.selected = node.index;
+          game_state.selected_dragging = true;
+          selected_dragging_this_frame = true;
+          playUISound('button_click');
+        }
+      }
       if (!(node.index === 0 && game_state.links.length === 0) && click(box)) {
         playUISound('link_deselect');
         game_state.selected = -1;
+        game_state.selected_dragging = false;
       }
     } else {
+      if (game_state.selected === -1) {
+        if (potential_drag === -1 && allowDrag()) {
+          let drag_ret = drag({
+            ...box,
+            min_dist: 0,
+            peek: true,
+          });
+          if (drag_ret && drag_ret.is_down_edge) {
+            potential_drag = node.index;
+          }
+        }
+        if (potential_drag === node.index) {
+          let drag_ret = drag({
+            ...box,
+            min_dist: 10,
+          });
+          if (drag_ret) {
+            game_state.selected = node.index;
+            game_state.selected_dragging = true;
+            selected_dragging_this_frame = true;
+            playUISound('button_click');
+            potential_drag = -1;
+          }
+        }
+      } else if (potential_drag === node.index) {
+        potential_drag = -1;
+      }
       let spot_ret = spot({
         ...box,
         key: `node${node.index}${node.unlocked}`,
         def: SPOT_DEFAULT_BUTTON,
         sound_button: null,
+        drag_target: true,
       });
-      let { focused, ret } = spot_ret;
-      if (focused || ret) {
+      let { focused, ret, drag_drop } = spot_ret;
+      if (focused || ret || drag_drop) {
         border_color = COLOR_FACTORY_BORDER_ROLLOVER;
         link_target = node.index;
-        if (ret) {
+        if (ret || drag_drop) {
           link_clicked = true;
+        }
+        if (drag_drop) {
+          selected_dragging_this_frame = true;
         }
       }
     }
@@ -1727,6 +1786,7 @@ function statePlay(dt: number): void {
   // Draw nodes
   link_clicked = false;
   link_target = -1;
+  selected_dragging_this_frame = false;
   camera2d.setAspectFixed(game_width * viewport.scale, game_height * viewport.scale);
   camera2d.shift(viewport.x * SCALE - game_width/2 * viewport.scale,
     viewport.y * SCALE - game_height/2 * viewport.scale);
@@ -1737,6 +1797,15 @@ function statePlay(dt: number): void {
   for (let ii = 0; ii < nodes.length; ++ii) {
     let node = nodes[ii];
     drawNode(node);
+  }
+  if (game_state.selected_dragging && !selected_dragging_this_frame) {
+    if (!drag({ payload: true })) {
+      game_state.selected = -1;
+      game_state.selected_dragging = false;
+      if (!link_clicked) {
+        playUISound('link_deselect');
+      }
+    }
   }
 
   doLinking();
@@ -1757,12 +1826,14 @@ function statePlay(dt: number): void {
       let dstart = v2dist(t1start, t2start);
       let dend = v2dist(t1end, t2end);
       let pinch = dend - dstart;
-      new_scale -= pinch * -0.005;
+      new_scale += pinch * -0.005;
       v2add(zoom_around, t1end, t2end);
       v2scale(zoom_around, zoom_around, 0.5);
     } else {
-      viewport.x -= delta[0] / SCALE;
-      viewport.y -= delta[1] / SCALE;
+      if (!game_state.selected_dragging) {
+        viewport.x -= delta[0] / SCALE;
+        viewport.y -= delta[1] / SCALE;
+      }
     }
   }
   let zoom = mouseWheel();
